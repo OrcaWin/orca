@@ -88,18 +88,32 @@ function GitBashIcon({ size = 14 }: { size?: number }): React.JSX.Element {
       xmlns="http://www.w3.org/2000/svg"
       aria-hidden
     >
-      <rect x="1.5" y="3" width="21" height="18" rx="2.5" fill="#F05032" />
-      <text
-        x="12"
-        y="15.2"
-        textAnchor="middle"
-        fontSize="7"
-        fontWeight="800"
-        fill="#ffffff"
-        fontFamily="system-ui, -apple-system, sans-serif"
-      >
-        {translate('auto.components.tab.bar.shell.icons.d4ceaa227c', 'Git')}
-      </text>
+      <rect x="1.5" y="3" width="21" height="18" rx="2.5" fill="#1F1F1F" />
+      <path d="M7 12l5-5 5 5-5 5z" fill="#F05032" />
+      <path
+        d="M9.1 9.1l5.8 5.8M12 11.9V9.1"
+        stroke="#ffffff"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <circle cx="9.1" cy="9.1" r="1.35" fill="#ffffff" />
+      <circle cx="12" cy="11.9" r="1.35" fill="#ffffff" />
+      <circle cx="14.9" cy="14.9" r="1.35" fill="#ffffff" />
+      <path
+        d="M5.2 17.3h13.6"
+        stroke="#ffffff"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+        opacity="0.8"
+      />
+      <path
+        d="M6.4 6.8h2.2"
+        stroke="#ffffff"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+        opacity="0.55"
+      />
     </svg>
   )
 }
