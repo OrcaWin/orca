@@ -2228,9 +2228,6 @@ function getSetupRunnerCommandPlatformForLaunch(
   setup: CreateWorktreeResult['setup'],
   fallbackPlatform: 'windows' | 'posix'
 ): 'windows' | 'posix' {
-  if (setup?.shell) {
-    return setup.shell.family === 'posix' ? 'posix' : 'windows'
-  }
   return getSetupRunnerCommandPlatformForPath(setup?.runnerScriptPath ?? '', fallbackPlatform)
 }
 
