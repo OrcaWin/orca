@@ -3647,6 +3647,10 @@ describe('registerWorktreeHandlers', () => {
   })
 
   it('writes a PowerShell setup runner for Windows SSH worktrees', async () => {
+    const actualHooks = (await vi.importActual('../hooks')) as {
+      buildPowerShellRunnerScript: (script: string) => string
+    }
+    const { buildPowerShellRunnerScript } = actualHooks
     const repo = {
       id: 'repo-ssh',
       path: 'C:\\remote\\repo',
@@ -3714,6 +3718,7 @@ describe('registerWorktreeHandlers', () => {
     parseOrcaYamlMock.mockReturnValue({ scripts: { setup: 'pnpm install' } })
     getEffectiveHooksFromConfigMock.mockReturnValue({ scripts: { setup: 'pnpm install' } })
     shouldRunSetupForCreateMock.mockReturnValue(true)
+    buildPowerShellRunnerScriptMock.mockImplementation(buildPowerShellRunnerScript)
     resolveSetupRunnerShellMock.mockReturnValue({
       family: 'powershell',
       executable: 'pwsh.exe'
@@ -3731,7 +3736,7 @@ describe('registerWorktreeHandlers', () => {
     )
     expect(fsProvider.writeFile).toHaveBeenCalledWith(
       'C:\\remote\\repo\\.git\\worktrees\\improve-dashboard\\orca\\setup-runner.ps1',
-      'pnpm install'
+      buildPowerShellRunnerScript('pnpm install')
     )
     expect(result).toEqual(
       expect.objectContaining({
