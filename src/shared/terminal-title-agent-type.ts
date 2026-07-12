@@ -201,6 +201,12 @@ export function getAgentLabel(title: string): string | null {
   if (HERMES_AGENT_NAME_RE.test(title)) {
     return 'Hermes'
   }
+  if (titleHasAgentName(title, 'kimi')) {
+    return 'Kimi'
+  }
+  if (titleHasAgentName(title, 'qwen')) {
+    return 'Qwen'
+  }
   if (isClaudeAgent(title)) {
     return 'Claude Code'
   }
@@ -227,6 +233,8 @@ const TITLE_LABEL_TO_AGENT: Partial<Record<string, TuiAgent>> = {
   Cursor: 'cursor',
   Droid: 'droid',
   Hermes: 'hermes',
+  Kimi: 'kimi',
+  Qwen: 'qwen-code',
   Pi: 'pi',
   OMP: 'omp'
 }

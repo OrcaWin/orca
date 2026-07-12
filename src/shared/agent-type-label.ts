@@ -23,6 +23,7 @@ const WELL_KNOWN_LABELS: Record<string, string> = {
   devin: 'Devin',
   ante: 'Ante',
   kimi: 'Kimi',
+  'qwen-code': 'Qwen',
   deepseek: 'DeepSeek'
 }
 
