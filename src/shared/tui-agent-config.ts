@@ -292,6 +292,18 @@ export const TUI_AGENT_CONFIG: Record<TuiAgent, TuiAgentConfig> = {
     expectedProcess: 'devin',
     // Why: `devin -- <prompt>` auto-submits immediately (docs.devin.ai/cli), so start the REPL with no argv prompt.
     promptInjectionMode: 'stdin-after-start'
+  },
+  deepseek: {
+    // Why: the official DeepSeek Code CLI (`pip install deepseek-code`) is
+    // installed by the user manually; no npm/homebrew/curl-sh installer exists
+    // as of 2026. Detect via the documented binary name.
+    detectCmd: 'deepseek',
+    launchCmd: 'deepseek',
+    expectedProcess: 'deepseek',
+    // Why: `deepseek --prompt <text>` runs non-interactively and exits, which
+    // would kill the TUI session Orca is hosting. `-i/--interactive <prompt>`
+    // starts an interactive session — the behavior Orca needs.
+    promptInjectionMode: 'flag-interactive'
   }
 }
 
