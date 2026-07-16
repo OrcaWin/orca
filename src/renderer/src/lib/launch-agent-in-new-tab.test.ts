@@ -175,6 +175,29 @@ describe('launchAgentInNewTab', () => {
     })
   })
 
+  it('routes Windows Cursor startup prompts after ready', async () => {
+    const { launchAgentInNewTab } = await import('./launch-agent-in-new-tab')
+
+    launchAgentInNewTab({
+      agent: 'cursor',
+      worktreeId: 'wt-1',
+      prompt: 'fix the startup path',
+      launchPlatform: 'win32'
+    })
+
+    expect(mockQueueTabStartupCommand).toHaveBeenCalledWith(
+      'tab-1',
+      expect.objectContaining({ command: "cursor-agent '--yolo'" })
+    )
+    expect(mockPasteDraftWhenAgentReady).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: 'fix the startup path',
+        agent: 'cursor',
+        submit: false
+      })
+    )
+  })
+
   it('opens supported submit-after-ready launches in chat and seeds a launch prompt echo', async () => {
     store.settings = {
       agentCmdOverrides: {},

@@ -11,6 +11,7 @@ import { toast } from 'sonner'
 import { translate } from '@/i18n/i18n'
 import { sourceControlActionRecipeMatchesTarget } from './source-control-action-recipe-match'
 import { resolveSourceControlAgentSaveTarget } from './source-control-agent-action-dialog-support'
+import { getTuiAgentPromptInjectionMode } from '../../../../shared/tui-agent-config'
 
 type RunSourceControlAgentActionStartArgs = {
   selectedAgent: TuiAgent
@@ -63,6 +64,12 @@ export async function runSourceControlAgentActionStart({
 }: RunSourceControlAgentActionStartArgs): Promise<boolean> {
   let launched = false
   let launchFailureNotified = false
+  const effectivePromptDelivery =
+    promptDelivery === 'auto-submit' &&
+    launchPlatform &&
+    getTuiAgentPromptInjectionMode(selectedAgent, launchPlatform) === 'stdin-after-start'
+      ? 'submit-after-ready'
+      : promptDelivery
   if (onStart) {
     launched = await onStart({
       agent: selectedAgent,
@@ -76,7 +83,7 @@ export async function runSourceControlAgentActionStart({
       groupId: groupId ?? worktreeId,
       prompt: trimmedCommandInput,
       agentArgs,
-      promptDelivery,
+      promptDelivery: effectivePromptDelivery,
       launchPlatform,
       launchSource
     })

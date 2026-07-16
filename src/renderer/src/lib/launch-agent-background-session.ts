@@ -14,7 +14,7 @@ import {
   resolveTuiAgentLaunchArgs,
   resolveTuiAgentLaunchEnv
 } from '../../../shared/tui-agent-launch-defaults'
-import { TUI_AGENT_CONFIG } from '../../../shared/tui-agent-config'
+import { getTuiAgentPromptInjectionMode, TUI_AGENT_CONFIG } from '../../../shared/tui-agent-config'
 import { repoIsRemote } from '../../../shared/agent-launch-remote'
 import { makePaneKey } from '../../../shared/stable-pane-id'
 import {
@@ -71,8 +71,6 @@ export async function launchAgentBackgroundSession(
         repo.connectionId ? undefined : getLocalProjectExecutionRuntimeContext(store, worktreeId)
       )
     : CLIENT_PLATFORM
-  // Why: SSH remotes deploy the CLI shim as plain `orca`, so the Linux-only
-  // `orca-ide` rename must not be applied for remote launches.
   const isRemote = repo ? repoIsRemote(repo) : false
   const startupShell = resolveLocalWindowsAgentStartupShell({
     platform: launchPlatform,
@@ -81,8 +79,8 @@ export async function launchAgentBackgroundSession(
   })
   const trimmedPrompt = prompt?.trim() ?? ''
   const hasPrompt = trimmedPrompt.length > 0
-  const isFollowupPath = TUI_AGENT_CONFIG[agent].promptInjectionMode === 'stdin-after-start'
-
+  const isFollowupPath =
+    getTuiAgentPromptInjectionMode(agent, launchPlatform) === 'stdin-after-start'
   const pasteDraftAfterLaunch = hasPrompt && isFollowupPath ? trimmedPrompt : null
   const startupPlan = buildAgentStartupPlan({
     agent,
@@ -98,9 +96,6 @@ export async function launchAgentBackgroundSession(
   if (!startupPlan) {
     return null
   }
-
-  // Why: automation runs should start without revealing the workspace.
-  // Spawn the PTY immediately, then attach an inactive tab to the live session.
   const tab = store.createTab(worktreeId, undefined, undefined, {
     activate: false,
     recordInteraction: false
@@ -115,12 +110,7 @@ export async function launchAgentBackgroundSession(
   const leafId = createBrowserUuid()
   const paneKey = makePaneKey(tab.id, leafId)
   const launchToken = createBrowserUuid()
-  const launchRegistration = {
-    agentType: agent,
-    launchToken,
-    tabId: tab.id,
-    leafId
-  }
+  const launchRegistration = { agentType: agent, launchToken, tabId: tab.id, leafId }
   store.registerAgentLaunchConfig(paneKey, startupPlan.launchConfig, launchRegistration)
   // Why: `title` labels the tab/worktree entry. Pane titles render as an
   // in-terminal title row, so background sessions must not persist it there.

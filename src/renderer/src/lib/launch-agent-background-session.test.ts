@@ -206,14 +206,12 @@ describe('launchAgentBackgroundSession', () => {
 
   it('spawns a PTY immediately and adopts it in an inactive tab', async () => {
     const { launchAgentBackgroundSession } = await import('./launch-agent-background-session')
-
     const result = await launchAgentBackgroundSession({
       agent: 'claude',
       worktreeId: 'wt-1',
       prompt: 'run the automation',
       title: 'Nightly audit'
     })
-
     expect(mockCreateTab).toHaveBeenCalledWith('wt-1', undefined, undefined, {
       activate: false,
       recordInteraction: false
@@ -281,7 +279,6 @@ describe('launchAgentBackgroundSession', () => {
       })
     )
     const { launchAgentBackgroundSession } = await import('./launch-agent-background-session')
-
     const launch = launchAgentBackgroundSession({
       agent: 'claude',
       worktreeId: 'wt-1',
@@ -365,7 +362,6 @@ describe('launchAgentBackgroundSession', () => {
       ok: true,
       result: { terminal: { handle: 'terminal-after-close', worktreeId: 'wt-1', title: null } }
     })
-
     await expect(launch).resolves.toBeNull()
     expect(mockRuntimeEnvironmentCall).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -386,13 +382,11 @@ describe('launchAgentBackgroundSession', () => {
     }
     mockSpawn.mockResolvedValue({ id: 'pty-1', launchConfig: effectiveLaunchConfig })
     const { launchAgentBackgroundSession } = await import('./launch-agent-background-session')
-
     await launchAgentBackgroundSession({
       agent: 'claude',
       worktreeId: 'wt-1',
       prompt: 'run the automation'
     })
-
     const paneKey = expectStablePaneSpawn()
     const leafId = paneKey.slice('tab-1:'.length)
     expect(mockRegisterAgentLaunchConfig).toHaveBeenLastCalledWith(paneKey, effectiveLaunchConfig, {
@@ -571,28 +565,23 @@ describe('launchAgentBackgroundSession', () => {
     expect(mockUpdateTabPtyId).not.toHaveBeenCalled()
   })
 
-  it('submits prompts for stdin-after-start agents in background mode', async () => {
-    const { launchAgentBackgroundSession } = await import('./launch-agent-background-session')
-
-    await launchAgentBackgroundSession({
-      agent: 'aider',
-      worktreeId: 'wt-1',
-      prompt: 'run the automation'
-    })
-
-    expect(mockSpawn).toHaveBeenCalledWith(
-      expect.objectContaining({ command: "aider '--yes-always'" })
-    )
-    expect(mockPasteDraftWhenAgentReady).toHaveBeenCalledWith(
-      expect.objectContaining({
-        tabId: 'tab-1',
-        content: 'run the automation',
-        agent: 'aider',
-        submit: true
-      })
-    )
-  })
-
+  it.each([
+    ['aider', 'run the automation', "aider '--yes-always'", null],
+    ['cursor', 'fix the startup path', "cursor-agent '--yolo'", 'win32']
+  ] as const)(
+    'submits %s startup prompts after ready in background mode',
+    async (agent, prompt, command, platform) => {
+      if (platform) {
+        mockGetAgentLaunchPlatformForRepo.mockReturnValue(platform)
+      }
+      const { launchAgentBackgroundSession } = await import('./launch-agent-background-session')
+      await launchAgentBackgroundSession({ agent, worktreeId: 'wt-1', prompt })
+      expect(mockSpawn).toHaveBeenCalledWith(expect.objectContaining({ command }))
+      expect(mockPasteDraftWhenAgentReady).toHaveBeenCalledWith(
+        expect.objectContaining({ tabId: 'tab-1', content: prompt, agent, submit: true })
+      )
+    }
+  )
   it('passes Hermes automation prompts through the native startup query', async () => {
     const { launchAgentBackgroundSession } = await import('./launch-agent-background-session')
 
@@ -610,7 +599,6 @@ describe('launchAgentBackgroundSession', () => {
     )
     expect(mockPasteDraftWhenAgentReady).not.toHaveBeenCalled()
   })
-
   it('uses the configured cmd shell for Windows Hermes background launches', async () => {
     mockGetAgentLaunchPlatformForRepo.mockReturnValue('win32')
     Object.assign(state.settings, { terminalWindowsShell: 'cmd.exe' })
@@ -629,7 +617,6 @@ describe('launchAgentBackgroundSession', () => {
       })
     )
   })
-
   it('forwards Hermes startup queries through SSH command transport', async () => {
     state.repos = [{ id: 'repo-1', connectionId: 'ssh-1', path: '/repo' }]
     const { launchAgentBackgroundSession } = await import('./launch-agent-background-session')
@@ -648,13 +635,11 @@ describe('launchAgentBackgroundSession', () => {
       })
     )
   })
-
   it('injects fast startup commands into SSH background sessions after shell output arrives', async () => {
     vi.useFakeTimers()
     try {
       state.repos = [{ id: 'repo-1', connectionId: 'ssh-1', path: '/repo' }]
       const { launchAgentBackgroundSession } = await import('./launch-agent-background-session')
-
       await launchAgentBackgroundSession({
         agent: 'claude',
         worktreeId: 'wt-1',
@@ -678,7 +663,6 @@ describe('launchAgentBackgroundSession', () => {
       vi.useRealTimers()
     }
   })
-
   it('waits for shell-ready before injecting payload-bearing SSH background commands', async () => {
     vi.useFakeTimers()
     try {
@@ -714,7 +698,6 @@ describe('launchAgentBackgroundSession', () => {
       vi.useRealTimers()
     }
   })
-
   it('waits for shell-ready for SSH background Codex native prefill commands without a hint', async () => {
     vi.useFakeTimers()
     try {
@@ -755,7 +738,6 @@ describe('launchAgentBackgroundSession', () => {
       vi.useRealTimers()
     }
   })
-
   it('does not rearm SSH background startup delivery after exit cleanup', async () => {
     vi.useFakeTimers()
     try {
