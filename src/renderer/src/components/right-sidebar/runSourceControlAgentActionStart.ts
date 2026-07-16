@@ -1,5 +1,6 @@
 import { focusTerminalTabSurface } from '@/lib/focus-terminal-tab-surface'
 import { launchAgentInNewTab } from '@/lib/launch-agent-in-new-tab'
+import { CLIENT_PLATFORM } from '@/lib/new-workspace'
 import type { GlobalSettings, Repo, TuiAgent } from '../../../../shared/types'
 import type { LaunchSource } from '../../../../shared/telemetry-events'
 import type {
@@ -66,8 +67,8 @@ export async function runSourceControlAgentActionStart({
   let launchFailureNotified = false
   const effectivePromptDelivery =
     promptDelivery === 'auto-submit' &&
-    launchPlatform &&
-    getTuiAgentPromptInjectionMode(selectedAgent, launchPlatform) === 'stdin-after-start'
+    getTuiAgentPromptInjectionMode(selectedAgent, launchPlatform ?? CLIENT_PLATFORM) ===
+      'stdin-after-start'
       ? 'submit-after-ready'
       : promptDelivery
   if (onStart) {
