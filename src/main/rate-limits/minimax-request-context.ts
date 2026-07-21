@@ -3,15 +3,30 @@ import { session, type Session } from 'electron'
 export const MINIMAX_USAGE_ENDPOINT =
   'https://platform.minimax.io/v1/api/openplatform/coding_plan/remains'
 
-// Why: China (.com) MiniMax accounts use a different API origin than .io
-// accounts. Try .io first; fall back to .com when the .io endpoint returns a
-// server-side error (not auth), since the API path and contract are identical.
+// Why: China (.com) MiniMax accounts use a different API origin than .io accounts,
+// with an identical API path. Try .io first; fall back to .com when the .io fetch
+// fails at the HTTP/transport layer (see minimax-fetcher retry logic).
 export const MINIMAX_USAGE_ENDPOINT_COM =
   'https://platform.minimax.com/v1/api/openplatform/coding_plan/remains'
 
 const MINIMAX_ORIGIN = 'https://platform.minimax.io'
-const MINIMAX_REFERER = 'https://platform.minimax.io/console/usage'
+// Why: China (.com) accounts are fetched from platform.minimax.com. Cookies and
+// Referer must be scoped to the origin actually being requested — cookies pinned to
+// the .io origin are never sent to .com, so a .com fetch would go out unauthenticated.
+const MINIMAX_ORIGIN_COM = 'https://platform.minimax.com'
 const MINIMAX_SESSION_PARTITION = 'orca-minimax-rate-limit-fetch'
+
+function miniMaxOriginForEndpoint(endpoint: string): string {
+  try {
+    return new URL(endpoint).origin
+  } catch {
+    return MINIMAX_ORIGIN
+  }
+}
+
+function miniMaxRefererForOrigin(origin: string): string {
+  return `${origin}/console/usage`
+}
 const SENSITIVE_COOKIE_NAMES = new Set([
   '_token',
   '_twpid',
@@ -97,11 +112,14 @@ export function redactMiniMaxSecret(value: string): string {
   return redacted
 }
 
-export function makeMiniMaxRequestHeaders(groupId: string | null): Record<string, string> {
+export function makeMiniMaxRequestHeaders(
+  groupId: string | null,
+  referer: string = miniMaxRefererForOrigin(MINIMAX_ORIGIN)
+): Record<string, string> {
   const headers: Record<string, string> = {
     Accept: 'application/json, text/plain, */*',
     'Accept-Language': 'en-US,en;q=0.9',
-    Referer: MINIMAX_REFERER,
+    Referer: referer,
     'User-Agent': getMiniMaxBrowserUserAgent()
   }
   if (groupId) {
@@ -110,12 +128,18 @@ export function makeMiniMaxRequestHeaders(groupId: string | null): Record<string
   return headers
 }
 
-async function clearMiniMaxSessionCookieJarForSession(miniMaxSession: Session): Promise<void> {
-  await miniMaxSession.clearStorageData({ origin: MINIMAX_ORIGIN, storages: ['cookies'] })
+async function clearMiniMaxSessionCookieJarForSession(
+  miniMaxSession: Session,
+  origin: string = MINIMAX_ORIGIN
+): Promise<void> {
+  await miniMaxSession.clearStorageData({ origin, storages: ['cookies'] })
 }
 
 export async function clearMiniMaxSessionCookieJar(): Promise<void> {
-  await clearMiniMaxSessionCookieJarForSession(session.fromPartition(MINIMAX_SESSION_PARTITION))
+  const miniMaxSession = session.fromPartition(MINIMAX_SESSION_PARTITION)
+  // Why: clear both origins so a rotated credential can't leave stale .io or .com cookies.
+  await clearMiniMaxSessionCookieJarForSession(miniMaxSession, MINIMAX_ORIGIN)
+  await clearMiniMaxSessionCookieJarForSession(miniMaxSession, MINIMAX_ORIGIN_COM)
 }
 
 export async function fetchMiniMaxWithSessionCookieJar(args: {
@@ -126,12 +150,13 @@ export async function fetchMiniMaxWithSessionCookieJar(args: {
 }): Promise<MiniMaxFetchResponse> {
   const miniMaxSession = session.fromPartition(MINIMAX_SESSION_PARTITION)
   const cookiePairs = parseCookiePairs(args.cookie)
+  const origin = miniMaxOriginForEndpoint(args.endpoint)
   try {
-    await clearMiniMaxSessionCookieJarForSession(miniMaxSession)
+    await clearMiniMaxSessionCookieJarForSession(miniMaxSession, origin)
     await Promise.all(
       cookiePairs.map((pair) =>
         miniMaxSession.cookies.set({
-          url: MINIMAX_ORIGIN,
+          url: origin,
           name: pair.name,
           value: pair.value,
           secure: true,
@@ -139,7 +164,7 @@ export async function fetchMiniMaxWithSessionCookieJar(args: {
         })
       )
     )
-    const headers = makeMiniMaxRequestHeaders(args.groupId)
+    const headers = makeMiniMaxRequestHeaders(args.groupId, miniMaxRefererForOrigin(origin))
     return {
       response: await miniMaxSession.fetch(args.endpoint, {
         method: 'GET',
@@ -151,7 +176,7 @@ export async function fetchMiniMaxWithSessionCookieJar(args: {
       transport: 'session-cookie-jar'
     }
   } finally {
-    await clearMiniMaxSessionCookieJarForSession(miniMaxSession).catch((error: unknown) => {
+    await clearMiniMaxSessionCookieJarForSession(miniMaxSession, origin).catch((error: unknown) => {
       console.warn('[minimax] failed to clear session cookie jar after fetch', error)
     })
   }
@@ -164,10 +189,11 @@ export async function fetchMiniMaxWithManualCookieHeader(args: {
   signal: AbortSignal
 }): Promise<MiniMaxFetchResponse> {
   const miniMaxSession = session.fromPartition(MINIMAX_SESSION_PARTITION)
+  const origin = miniMaxOriginForEndpoint(args.endpoint)
   try {
-    await clearMiniMaxSessionCookieJarForSession(miniMaxSession)
+    await clearMiniMaxSessionCookieJarForSession(miniMaxSession, origin)
     const headers = {
-      ...makeMiniMaxRequestHeaders(args.groupId),
+      ...makeMiniMaxRequestHeaders(args.groupId, miniMaxRefererForOrigin(origin)),
       Cookie: normalizeMiniMaxCookieHeader(args.cookie)
     }
     return {
@@ -181,7 +207,7 @@ export async function fetchMiniMaxWithManualCookieHeader(args: {
       transport: 'manual-cookie-header'
     }
   } finally {
-    await clearMiniMaxSessionCookieJarForSession(miniMaxSession).catch((error: unknown) => {
+    await clearMiniMaxSessionCookieJarForSession(miniMaxSession, origin).catch((error: unknown) => {
       console.warn('[minimax] failed to clear session cookie jar after fetch', error)
     })
   }

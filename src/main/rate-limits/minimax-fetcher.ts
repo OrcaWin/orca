@@ -21,20 +21,21 @@ export {
 
 const API_TIMEOUT_MS = 15_000
 
-// Why: China (.com) MiniMax accounts use platform.minimax.com; .io accounts
-// use platform.minimax.io. Both share the same API path. Try the .io endpoint
-// first; retry with .com on non-auth server errors so .com users get quota
-// without manual configuration.
-// Why: China (.com) MiniMax accounts use the same API path on a different origin;
-// hold the secondary endpoint so the retry logic can reference it without importing
-// MINIMAX_USAGE_ENDPOINT_COM at the call site in fetchMiniMaxRateLimits.
-const SECONDARY_ENDPOINT = MINIMAX_USAGE_ENDPOINT_COM
+// Why: only retry the .com endpoint when .io gave back no usable usage body — an
+// HTTP/transport failure (auth rejection, server error, or network/timeout, which
+// includes a GFW-blocked .io for China users). A payload-level failure (parse /
+// usage-unavailable / model-not-found) means .io authenticated and answered, so it
+// IS the account's endpoint and .com cannot help — retrying there just wastes a
+// second 15s request for every .io user hitting a transient app error.
+const SECONDARY_ENDPOINT_RETRYABLE_FAILURES = new Set<
+  NonNullable<ProviderRateLimits['usageMetadata']>['failureKind']
+>(['stale-token', 'server', 'network'])
 
-// Why: distinguish auth failures (stale token) from transient server errors so the
-// endpoint-retry logic does not retry with a different origin when the credential
-// itself is invalid — that would waste a request and return the same auth error.
-function hasAuthError(error: ProviderRateLimits): boolean {
-  return error.usageMetadata?.failureKind === 'stale-token'
+function shouldRetryOnSecondaryEndpoint(result: ProviderRateLimits): boolean {
+  return (
+    result.status !== 'ok' &&
+    SECONDARY_ENDPOINT_RETRYABLE_FAILURES.has(result.usageMetadata?.failureKind)
+  )
 }
 
 type MiniMaxUsageItem = {
@@ -238,15 +239,12 @@ async function tryFetchMiniMaxRateLimits(
   options: FetchMiniMaxRateLimitsOptions,
   endpoint: string
 ): Promise<ProviderRateLimits> {
+  const cookie = normalizeMiniMaxCookieHeader(options.cookie.trim())
   const groupId =
-    options.groupId?.trim() ||
-    extractMiniMaxCookieValue(
-      normalizeMiniMaxCookieHeader(options.cookie.trim()),
-      'minimax_group_id_v2'
-    )
+    options.groupId?.trim() || extractMiniMaxCookieValue(cookie, 'minimax_group_id_v2')
   try {
     const fetchResult = await fetchMiniMaxResponse({
-      cookie: normalizeMiniMaxCookieHeader(options.cookie.trim()),
+      cookie,
       endpoint,
       groupId,
       signal: AbortSignal.timeout(API_TIMEOUT_MS)
@@ -307,19 +305,19 @@ export async function fetchMiniMaxRateLimits(
   }
   const primaryEndpoint = options.endpoint ?? MINIMAX_USAGE_ENDPOINT
   const primaryResult = await tryFetchMiniMaxRateLimits(options, primaryEndpoint)
-  // Why: retry with the .com endpoint when the .io endpoint fails with a
-  // non-auth server error. This covers China (.com) MiniMax accounts whose
-  // API origin differs from .io accounts.
+  // Why: for China (.com) accounts the .io fetch fails at the HTTP/transport layer;
+  // retry once against .com. Skip if the caller already targeted .com (no self-retry).
   if (
-    primaryResult.status !== 'ok' &&
-    !hasAuthError(primaryResult) &&
-    primaryEndpoint !== SECONDARY_ENDPOINT
+    primaryEndpoint !== MINIMAX_USAGE_ENDPOINT_COM &&
+    shouldRetryOnSecondaryEndpoint(primaryResult)
   ) {
-    console.warn('[minimax] primary endpoint failed; retrying with secondary', {
-      primaryError: primaryResult.error,
-      secondaryEndpoint: SECONDARY_ENDPOINT
+    console.warn('[minimax] .io endpoint failed; retrying against .com', {
+      failureKind: primaryResult.usageMetadata?.failureKind
     })
-    return await tryFetchMiniMaxRateLimits(options, SECONDARY_ENDPOINT)
+    const secondaryResult = await tryFetchMiniMaxRateLimits(options, MINIMAX_USAGE_ENDPOINT_COM)
+    // Why: only adopt the .com result if it succeeded; otherwise keep the original .io
+    // error so the user sees the more relevant failure instead of a .com auth error.
+    return secondaryResult.status === 'ok' ? secondaryResult : primaryResult
   }
   return primaryResult
 }

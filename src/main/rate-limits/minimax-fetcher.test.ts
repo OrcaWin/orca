@@ -27,6 +27,7 @@ import {
 } from './minimax-fetcher'
 
 const MINIMAX_URL = 'https://platform.minimax.io/v1/api/openplatform/coding_plan/remains'
+const MINIMAX_COM_URL = 'https://platform.minimax.com/v1/api/openplatform/coding_plan/remains'
 
 function makeResponse(body: unknown, status = 200): Response {
   return {
@@ -449,6 +450,90 @@ describe('fetchMiniMaxRateLimits', () => {
         cookieNames: ['_token', '_twpid', 'minimax_group_id_v2', 'platform_cookie_consent']
       })
     )
+  })
+
+  describe('China (.com) endpoint fallback', () => {
+    function getCookieJarSetUrls(): string[] {
+      return cookiesSetMock.mock.calls.map((call) => {
+        const [details] = call as unknown as [{ url: string }]
+        return details.url
+      })
+    }
+
+    it('retries against the .com endpoint when .io returns an auth error and succeeds', async () => {
+      // A .com-account token is rejected by .io with 401; the .com retry authenticates.
+      netFetchMock
+        .mockResolvedValueOnce(makeResponse({}, 401))
+        .mockResolvedValueOnce(makeResponse(makeOkPayload(60)))
+      const result = await fetchMiniMaxRateLimits({ cookie: FULL_COOKIE })
+      expect(result.status).toBe('ok')
+      expect(result.session?.usedPercent).toBe(40)
+      expect(netFetchMock).toHaveBeenCalledTimes(2)
+      expect(netFetchMock.mock.calls[0][0]).toBe(MINIMAX_URL)
+      expect(netFetchMock.mock.calls[1][0]).toBe(MINIMAX_COM_URL)
+    })
+
+    it('carries credentials and a .com Referer to the .com origin on retry', async () => {
+      netFetchMock
+        .mockResolvedValueOnce(makeResponse({}, 403))
+        .mockResolvedValueOnce(makeResponse(makeOkPayload(70)))
+      await fetchMiniMaxRateLimits({ cookie: FULL_COOKIE })
+      // Cookies for the retry must be scoped to the .com origin, else the request
+      // goes out unauthenticated and the fallback is pointless.
+      expect(getCookieJarSetUrls()).toContain('https://platform.minimax.com')
+      const [, retryInit] = netFetchMock.mock.calls[1]
+      expect(retryInit.headers.Referer).toBe('https://platform.minimax.com/console/usage')
+      expect(clearStorageDataMock).toHaveBeenCalledWith({
+        origin: 'https://platform.minimax.com',
+        storages: ['cookies']
+      })
+    })
+
+    it('retries against .com when the .io fetch fails at the network layer (GFW-blocked)', async () => {
+      netFetchMock
+        .mockRejectedValueOnce(new Error('io network unreachable'))
+        .mockRejectedValueOnce(new Error('io network unreachable'))
+        .mockResolvedValueOnce(makeResponse(makeOkPayload(50)))
+      const result = await fetchMiniMaxRateLimits({ cookie: FULL_COOKIE })
+      expect(result.status).toBe('ok')
+      expect(result.session?.usedPercent).toBe(50)
+      // .io: session-jar throws then manual-header throws (network); then .com succeeds.
+      expect(netFetchMock.mock.calls.at(-1)?.[0]).toBe(MINIMAX_COM_URL)
+    })
+
+    it('does NOT retry .com when .io answers with a payload-level error', async () => {
+      // .io authenticated and returned a body, so it is the account's endpoint; no retry.
+      netFetchMock.mockResolvedValueOnce(
+        makeResponse({ base_resp: { status_code: 401, status_msg: 'unauth' } })
+      )
+      const result = await fetchMiniMaxRateLimits({ cookie: FULL_COOKIE })
+      expect(result.status).toBe('error')
+      expect(result.usageMetadata?.failureKind).toBe('usage-unavailable')
+      expect(netFetchMock).toHaveBeenCalledTimes(1)
+    })
+
+    it('surfaces the original .io error when the .com retry also fails', async () => {
+      netFetchMock
+        .mockResolvedValueOnce(makeResponse({}, 500))
+        .mockResolvedValueOnce(makeResponse({}, 500))
+      const result = await fetchMiniMaxRateLimits({ cookie: FULL_COOKIE })
+      expect(result.status).toBe('error')
+      // Keep the .io failure (server), not a masking .com error.
+      expect(result.usageMetadata?.failureKind).toBe('server')
+      expect(result.error).toMatch(/500/)
+      expect(netFetchMock).toHaveBeenCalledTimes(2)
+    })
+
+    it('does not self-retry when the caller already targets the .com endpoint', async () => {
+      netFetchMock.mockResolvedValueOnce(makeResponse({}, 401))
+      const result = await fetchMiniMaxRateLimits({
+        cookie: FULL_COOKIE,
+        endpoint: MINIMAX_COM_URL
+      })
+      expect(result.status).toBe('error')
+      expect(result.usageMetadata?.failureKind).toBe('stale-token')
+      expect(netFetchMock).toHaveBeenCalledTimes(1)
+    })
   })
 })
 
