@@ -71,6 +71,8 @@ export async function launchAgentBackgroundSession(
         repo.connectionId ? undefined : getLocalProjectExecutionRuntimeContext(store, worktreeId)
       )
     : CLIENT_PLATFORM
+  // Why: SSH remotes deploy the CLI shim as plain `orca`, so the Linux-only
+  // `orca-ide` rename must not be applied for remote launches.
   const isRemote = repo ? repoIsRemote(repo) : false
   const startupShell = resolveLocalWindowsAgentStartupShell({
     platform: launchPlatform,
@@ -96,6 +98,8 @@ export async function launchAgentBackgroundSession(
   if (!startupPlan) {
     return null
   }
+  // Why: automation runs should start without revealing the workspace.
+  // Spawn the PTY immediately, then attach an inactive tab to the live session.
   const tab = store.createTab(worktreeId, undefined, undefined, {
     activate: false,
     recordInteraction: false

@@ -97,9 +97,10 @@ export function buildAgentStartupPlan(args: {
 
   const quotedPrompt = quoteStartupArg(trimmedPrompt, shell)
   if (promptInjectionMode === 'argv') {
+    const promptSeparator = config.argvPromptSeparator ? ` ${config.argvPromptSeparator}` : ''
     return {
       agent,
-      launchCommand: `${baseCommand.command}${config.argvPromptSeparator ? ` ${config.argvPromptSeparator}` : ''} ${quotedPrompt}`,
+      launchCommand: `${baseCommand.command}${promptSeparator} ${quotedPrompt}`,
       expectedProcess: config.expectedProcess,
       followupPrompt: null,
       launchConfig,
@@ -136,6 +137,8 @@ export function buildAgentStartupPlan(args: {
     }
     return {
       agent,
+      // Why: Hermes owns readiness and submission for `chat --query`; Orca
+      // only bounds and quotes the native invocation before starting the TUI.
       launchCommand: queryPlan.command,
       expectedProcess: config.expectedProcess,
       followupPrompt: null,
