@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { getAgentLabel as getSharedAgentLabel } from './agent-title-identity'
 import { isOpenCodeNativeTitle } from './opencode-terminal-title'
 import {
+  getAgentLabel as getTerminalAgentLabel,
   isClaudeAgent,
   isGrokRotatingWorkingTitle,
   resolveExplicitTerminalTitleAgentType,
@@ -122,6 +123,69 @@ describe('resolveTerminalTitleAgentType', () => {
       'claude'
     )
     expect(resolveTerminalTitleAgentType('⠋ Codex: fix cursor offsets')).toBe('codex')
+  })
+})
+
+// Why: getAgentLabel lives in two parallel copies (terminal-title-agent-type.ts and
+// agent-title-identity.ts). Assert BOTH so a fix landing in one but not the other is caught.
+const bothAgentLabelCopies: [string, (title: string) => string | null][] = [
+  ['terminal-title-agent-type', getTerminalAgentLabel],
+  ['agent-title-identity', getSharedAgentLabel]
+]
+
+describe.each(bothAgentLabelCopies)(
+  'getAgentLabel (%s) — Windows .exe suffix (bug #8302/2)',
+  (_name, getAgentLabel) => {
+    it('detects Hermes/Droid/Antigravity titles carrying a Windows executable suffix', () => {
+      // Why: Windows launcher titles surface `hermes.exe`; without the suffix these fell
+      // through to isClaudeAgent's braille heuristic and mis-showed the Claude icon.
+      expect(getAgentLabel('hermes.exe')).toBe('Hermes')
+      expect(getAgentLabel('⠋ hermes.exe')).toBe('Hermes')
+      expect(getAgentLabel('hermes.cmd')).toBe('Hermes')
+      expect(getAgentLabel('droid.exe')).toBe('Droid')
+      expect(getAgentLabel('⠋ droid.bat')).toBe('Droid')
+      expect(getAgentLabel('agy.exe')).toBe('Antigravity')
+    })
+
+    it('does not mint Droid/Hermes identity from lookalikes or path fragments', () => {
+      // `android.exe` embeds "droid" but is not a token boundary; paths carry the name too.
+      expect(getAgentLabel('android.exe')).toBeNull()
+      expect(getAgentLabel('~/hermes/working')).toBeNull()
+      expect(getAgentLabel('hermes.zip')).toBeNull()
+    })
+  }
+)
+
+describe.each(bothAgentLabelCopies)(
+  'getAgentLabel (%s) — Kimi/Qwen title detection (bug #8302/3)',
+  (_name, getAgentLabel) => {
+    it('recognizes Kimi/Qwen titles before the Claude braille fallback', () => {
+      expect(getAgentLabel('kimi')).toBe('Kimi')
+      expect(getAgentLabel('⠋ Kimi')).toBe('Kimi')
+      expect(getAgentLabel('qwen')).toBe('Qwen')
+      expect(getAgentLabel('⠋ Qwen')).toBe('Qwen')
+    })
+
+    it('token-matches so unrelated words do not mint Kimi/Qwen identity', () => {
+      // No token boundary and no other signal → no identity.
+      expect(getAgentLabel('~/kimi-notes/plan')).toBeNull()
+      // A Claude braille task mentioning "qwen…" stays Claude; the token never matches.
+      expect(getAgentLabel('⠋ qwenching the build')).not.toBe('Qwen')
+      expect(getAgentLabel('⠋ qwenching the build')).toBe('Claude Code')
+    })
+  }
+)
+
+describe('resolveTerminalTitleAgentType — new agents (bug #8302)', () => {
+  it('maps Kimi/Qwen titles to their TuiAgent ids', () => {
+    expect(resolveTerminalTitleAgentType('⠋ Kimi')).toBe('kimi')
+    expect(resolveTerminalTitleAgentType('⠋ Qwen')).toBe('qwen-code')
+  })
+
+  it('maps Windows-suffixed Hermes/Droid/Antigravity titles to their TuiAgent ids', () => {
+    expect(resolveTerminalTitleAgentType('hermes.exe')).toBe('hermes')
+    expect(resolveTerminalTitleAgentType('droid.exe')).toBe('droid')
+    expect(resolveTerminalTitleAgentType('agy.exe')).toBe('antigravity')
   })
 })
 
