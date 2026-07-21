@@ -3624,7 +3624,8 @@ describe('registerWorktreeHandlers', () => {
     )
     expect(resolveSetupRunnerShellMock).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceDir: '/workspace' }),
-      'linux'
+      'linux',
+      { probeLocalPwsh: false }
     )
     expect(fsProvider.createDir).toHaveBeenCalledWith(
       '/remote/repo/.git/worktrees/improve-dashboard/orca'
