@@ -41,6 +41,10 @@ internal static class OrcaCliLauncher
                 UseShellExecute = false
             };
 
+            // Why: WSL can supply case-only duplicates that .NET's case-insensitive
+            // ProcessStartInfo environment rejects before the child can start.
+            WindowsProcessEnvironment.NormalizeCaseCollisions();
+
             // Why: launching without cmd.exe preserves embedded newlines while matching the
             // packaged batch launcher's Electron-as-Node environment contract.
             MoveEnvironmentVariable(startInfo.EnvironmentVariables, "NODE_OPTIONS", "ORCA_NODE_OPTIONS");

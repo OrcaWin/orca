@@ -13,7 +13,10 @@ if (process.platform !== 'win32') {
 }
 
 const repoRoot = resolve(import.meta.dirname, '../..')
-const sourcePath = join(repoRoot, 'native', 'windows-cli-launcher', 'OrcaCliLauncher.cs')
+const sourcePaths = [
+  join(repoRoot, 'native', 'windows-cli-launcher', 'OrcaCliLauncher.cs'),
+  join(repoRoot, 'native', 'windows-cli-launcher', 'WindowsProcessEnvironment.cs')
+]
 const outputPath = readArg('--output') ?? defaultOutputPath(repoRoot)
 const compilerPath = findFrameworkCompiler(process.env)
 
@@ -24,7 +27,7 @@ if (!compilerPath) {
 mkdirSync(dirname(outputPath), { recursive: true })
 const result = spawnSync(
   compilerPath,
-  ['/nologo', '/target:exe', '/optimize+', '/warnaserror+', `/out:${outputPath}`, sourcePath],
+  ['/nologo', '/target:exe', '/optimize+', '/warnaserror+', `/out:${outputPath}`, ...sourcePaths],
   { cwd: repoRoot, stdio: 'inherit' }
 )
 
