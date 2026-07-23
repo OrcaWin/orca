@@ -34,7 +34,9 @@ import {
   applyWebSessionTabsSnapshot,
   applyWebSessionTabsSnapshots,
   clearWebSessionTabsTrackingForEnvironment,
+  queueProvisionalHostTerminalClose,
   resolveHostSessionTabIdForWebSessionTab,
+  resolveHostTerminalCloseAuthorityForWebSessionTab,
   resetWebSessionTabsSnapshotFreshnessForTests,
   shouldSyncAllRuntimeSessionTabs,
   shouldApplyWebSessionTabsSnapshot,
@@ -43,6 +45,7 @@ import {
   shouldSyncRuntimeSessionTabs,
   type WebSessionTabsSyncState
 } from './web-session-tabs-sync'
+import { replaceRuntimeEnvironmentRevisions } from './runtime-environment-revision'
 
 vi.mock('../store', () => ({
   useAppStore: {
@@ -112,6 +115,7 @@ describe('applyWebSessionTabsSnapshot', () => {
     resetWebSessionCloseIntentForTests()
     resetWebSessionReorderIntentForTests()
     resetWebAgentSessionHandoffsForTests()
+    replaceRuntimeEnvironmentRevisions([{ id: ENV, createdAt: 1, pairingRevision: 1 }])
   })
 
   it('ignores stale or duplicate same-epoch snapshots after a newer version was applied', () => {
@@ -153,6 +157,207 @@ describe('applyWebSessionTabsSnapshot', () => {
       activeTabType: null
     })
     expect(shouldApplyWebSessionTabsSnapshot(sameEpochOlder, ENV)).toBe(false)
+  })
+
+  it('tracks the additive generation-bound close handle separately from the stream handle', () => {
+    applyFreshWebSessionTabsSnapshot(
+      makeState(),
+      makeSnapshot([
+        {
+          type: 'terminal',
+          id: HOST_SURFACE_ID,
+          parentTabId: 'host-tab-1',
+          leafId: LEAF_ID,
+          title: 'Terminal',
+          isActive: true,
+          status: 'ready',
+          terminal: 'term-stream-stable',
+          terminalCloseHandle: 'term-close-generation-2'
+        }
+      ]),
+      ENV,
+      NOW
+    )
+
+    expect(
+      resolveHostTerminalCloseAuthorityForWebSessionTab({
+        environmentId: ENV,
+        worktreeId: WT,
+        tabId: toWebTerminalSurfaceTabId('host-tab-1')
+      })
+    ).toEqual({ kind: 'generation-bound', handle: 'term-close-generation-2' })
+  })
+
+  it('marks a ready old-host surface for legacy tab-id close without reusing its stream handle', () => {
+    applyFreshWebSessionTabsSnapshot(
+      makeState(),
+      makeSnapshot([
+        {
+          type: 'terminal',
+          id: HOST_SURFACE_ID,
+          parentTabId: 'host-tab-1',
+          leafId: LEAF_ID,
+          title: 'Terminal',
+          isActive: true,
+          status: 'ready',
+          terminal: 'term-stream-stable'
+        }
+      ]),
+      ENV,
+      NOW
+    )
+
+    expect(
+      resolveHostTerminalCloseAuthorityForWebSessionTab({
+        environmentId: ENV,
+        worktreeId: WT,
+        tabId: toWebTerminalSurfaceTabId('host-tab-1')
+      })
+    ).toEqual({ kind: 'legacy-tab-id' })
+  })
+
+  it('fails closed when a capable host temporarily omits generation authority', () => {
+    applyFreshWebSessionTabsSnapshot(
+      makeState(),
+      makeSnapshot(
+        [
+          {
+            type: 'terminal',
+            id: HOST_SURFACE_ID,
+            parentTabId: 'host-tab-1',
+            leafId: LEAF_ID,
+            title: 'Terminal',
+            isActive: true,
+            status: 'ready',
+            terminal: 'term-stream-stable'
+          }
+        ],
+        { terminalCloseAuthority: 'generation-bound' }
+      ),
+      ENV,
+      NOW
+    )
+
+    expect(
+      resolveHostTerminalCloseAuthorityForWebSessionTab({
+        environmentId: ENV,
+        worktreeId: WT,
+        tabId: toWebTerminalSurfaceTabId('host-tab-1')
+      })
+    ).toBeNull()
+  })
+
+  it('uses an explicit legacy lane when a capable host owns an older lower provider', () => {
+    applyFreshWebSessionTabsSnapshot(
+      makeState(),
+      makeSnapshot(
+        [
+          {
+            type: 'terminal',
+            id: HOST_SURFACE_ID,
+            parentTabId: 'host-tab-1',
+            leafId: LEAF_ID,
+            title: 'Terminal',
+            isActive: true,
+            status: 'ready',
+            terminal: 'term-stream-stable',
+            terminalCloseLegacy: true
+          }
+        ],
+        { terminalCloseAuthority: 'generation-bound' }
+      ),
+      ENV,
+      NOW
+    )
+
+    expect(
+      resolveHostTerminalCloseAuthorityForWebSessionTab({
+        environmentId: ENV,
+        worktreeId: WT,
+        tabId: toWebTerminalSurfaceTabId('host-tab-1')
+      })
+    ).toEqual({ kind: 'legacy-tab-id' })
+  })
+
+  it('runs a provisional close only for its exact pairing and create generation', async () => {
+    const close = vi.fn()
+    recordWebAgentSessionHandoff({
+      environmentId: ENV,
+      worktreeId: WT,
+      provisionalTabId: 'provisional-1',
+      hostTabId: 'host-tab-1',
+      hostTerminalHandle: 'term-stream-1',
+      hostTerminalCloseHandle: 'term-close-1',
+      pairingRevision: 1
+    })
+    expect(
+      queueProvisionalHostTerminalClose(
+        { environmentId: ENV, worktreeId: WT, tabId: 'provisional-1' },
+        close
+      )
+    ).toBe(true)
+
+    applyFreshWebSessionTabsSnapshot(
+      makeState(),
+      makeSnapshot([
+        {
+          type: 'terminal',
+          id: HOST_SURFACE_ID,
+          parentTabId: 'host-tab-1',
+          leafId: LEAF_ID,
+          title: 'Terminal',
+          isActive: true,
+          status: 'ready',
+          terminal: 'term-stream-1',
+          terminalCloseHandle: 'term-close-1'
+        }
+      ]),
+      ENV,
+      NOW
+    )
+    await Promise.resolve()
+
+    expect(close).toHaveBeenCalledWith(toWebTerminalSurfaceTabId('host-tab-1'))
+  })
+
+  it('drops a provisional close after the pairing or generation changes', async () => {
+    const close = vi.fn()
+    recordWebAgentSessionHandoff({
+      environmentId: ENV,
+      worktreeId: WT,
+      provisionalTabId: 'provisional-1',
+      hostTabId: 'host-tab-1',
+      hostTerminalHandle: 'term-stream-1',
+      hostTerminalCloseHandle: 'term-close-1',
+      pairingRevision: 1
+    })
+    queueProvisionalHostTerminalClose(
+      { environmentId: ENV, worktreeId: WT, tabId: 'provisional-1' },
+      close
+    )
+    replaceRuntimeEnvironmentRevisions([{ id: ENV, createdAt: 2, pairingRevision: 2 }])
+
+    applyFreshWebSessionTabsSnapshot(
+      makeState(),
+      makeSnapshot([
+        {
+          type: 'terminal',
+          id: HOST_SURFACE_ID,
+          parentTabId: 'host-tab-1',
+          leafId: LEAF_ID,
+          title: 'Replacement',
+          isActive: true,
+          status: 'ready',
+          terminal: 'term-stream-2',
+          terminalCloseHandle: 'term-close-2'
+        }
+      ]),
+      ENV,
+      NOW
+    )
+    await Promise.resolve()
+
+    expect(close).not.toHaveBeenCalled()
   })
 
   it('accepts a replayed same-epoch same-version snapshot after a transport reconnect', () => {

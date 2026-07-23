@@ -79,9 +79,11 @@ import {
   clearWebAgentSessionHandoffsForEnvironment,
   clearWebAgentSessionHandoffsForWorktree,
   isWebAgentSessionHandoffPostCreateSnapshotConfirmed,
-  resolveWebAgentSessionHandoff
+  resolveWebAgentSessionHandoff,
+  resolveWebAgentSessionHandoffAuthority
 } from './web-agent-session-handoff'
 import { getRuntimeEnvironmentRevision } from './runtime-environment-revision'
+import { TERMINAL_EXPLICIT_CLOSE_AUTHORITY_RUNTIME_CAPABILITY } from '../../../shared/protocol-version'
 
 const WEB_SESSION_GROUP_PREFIX = 'web-session-tabs:'
 
@@ -103,6 +105,21 @@ const latestSessionTabsSnapshotByWorktree = new Map<string, SnapshotFreshness>()
 const replayableSessionTabsSnapshotByWorktree = new Map<string, SnapshotFreshness>()
 const lastHostTerminalTabCountByWorktree = new Map<string, number>()
 const hostSessionTabIdByLocalKey = new Map<string, string>()
+export type HostTerminalCloseAuthority =
+  | { kind: 'generation-bound'; handle: string }
+  | { kind: 'legacy-tab-id' }
+
+const terminalCloseAuthorityByLocalKey = new Map<string, HostTerminalCloseAuthority>()
+type PendingExplicitTerminalClose = {
+  close: () => void
+  expire: () => void
+  expiresAt: number
+  expectedPairingRevision: number | undefined
+  expectedTerminalHandle: string
+  expectedTerminalCloseHandle: string | null
+}
+const pendingExplicitTerminalCloseByLocalKey = new Map<string, PendingExplicitTerminalClose>()
+const PROVISIONAL_TERMINAL_CLOSE_TTL_MS = 60_000
 
 type TerminalSurface = RuntimeMobileSessionTerminalClientTab
 type ReadyTerminalSurface = RuntimeMobileSessionTerminalClientTab & { status: 'ready' }
@@ -160,7 +177,12 @@ export type WebSessionTabsSyncState = Pick<
   | 'unreadTerminalTabs'
   | 'sortEpoch'
 > &
-  Partial<Pick<AppState, 'automaticAgentResumeClaimsByTabId' | 'pendingStartupByTabId'>>
+  Partial<
+    Pick<
+      AppState,
+      'automaticAgentResumeClaimsByTabId' | 'pendingStartupByTabId' | 'runtimeStatusByEnvironmentId'
+    >
+  >
 
 function isSessionTabsListAllResult(value: unknown): value is SessionTabsListAllResult {
   return (
@@ -328,6 +350,8 @@ export function resetWebSessionTabsSnapshotFreshnessForTests(): void {
   replayableSessionTabsSnapshotByWorktree.clear()
   lastHostTerminalTabCountByWorktree.clear()
   hostSessionTabIdByLocalKey.clear()
+  terminalCloseAuthorityByLocalKey.clear()
+  pendingExplicitTerminalCloseByLocalKey.clear()
 }
 
 export function _getWebSessionTabsTrackingCountsForTest(): {
@@ -353,6 +377,16 @@ function clearWebSessionTabsTrackingForWorktree(environmentId: string, worktreeI
   for (const key of hostSessionTabIdByLocalKey.keys()) {
     if (key.startsWith(keyPrefix)) {
       hostSessionTabIdByLocalKey.delete(key)
+    }
+  }
+  for (const key of terminalCloseAuthorityByLocalKey.keys()) {
+    if (key.startsWith(keyPrefix)) {
+      terminalCloseAuthorityByLocalKey.delete(key)
+    }
+  }
+  for (const key of pendingExplicitTerminalCloseByLocalKey.keys()) {
+    if (key.startsWith(keyPrefix)) {
+      pendingExplicitTerminalCloseByLocalKey.delete(key)
     }
   }
 }
@@ -381,6 +415,16 @@ export function clearWebSessionTabsTrackingForEnvironment(environmentId: string)
   for (const key of hostSessionTabIdByLocalKey.keys()) {
     if (key.startsWith(keyPrefix)) {
       hostSessionTabIdByLocalKey.delete(key)
+    }
+  }
+  for (const key of terminalCloseAuthorityByLocalKey.keys()) {
+    if (key.startsWith(keyPrefix)) {
+      terminalCloseAuthorityByLocalKey.delete(key)
+    }
+  }
+  for (const key of pendingExplicitTerminalCloseByLocalKey.keys()) {
+    if (key.startsWith(keyPrefix)) {
+      pendingExplicitTerminalCloseByLocalKey.delete(key)
     }
   }
   clearWebAgentSessionHandoffsForEnvironment(trimmedEnvironmentId)
@@ -413,6 +457,52 @@ export function resolveHostSessionTabIdForWebSessionTab(
       provisionalTabId: args.tabId
     })
   )
+}
+
+export function resolveHostTerminalCloseAuthorityForWebSessionTab(args: {
+  environmentId: string
+  worktreeId: string
+  tabId: string
+}): HostTerminalCloseAuthority | null {
+  return terminalCloseAuthorityByLocalKey.get(hostSessionTabMappingKey(args)) ?? null
+}
+
+export function queueProvisionalHostTerminalClose(
+  args: { environmentId: string; worktreeId: string; tabId: string },
+  close: (canonicalTabId: string) => void,
+  onExpire: () => void = () => {}
+): boolean {
+  const handoff = resolveWebAgentSessionHandoffAuthority({
+    environmentId: args.environmentId,
+    worktreeId: args.worktreeId,
+    provisionalTabId: args.tabId
+  })
+  const currentPairingRevision = getRuntimeEnvironmentRevision(args.environmentId)
+  if (
+    !handoff ||
+    (handoff.pairingRevision !== undefined && handoff.pairingRevision !== currentPairingRevision)
+  ) {
+    return false
+  }
+  const canonicalTabId = toWebTerminalSurfaceTabId(handoff.hostTabId)
+  const key = hostSessionTabMappingKey({ ...args, tabId: canonicalTabId })
+  const pending: PendingExplicitTerminalClose = {
+    close: () => close(canonicalTabId),
+    expire: onExpire,
+    expiresAt: Date.now() + PROVISIONAL_TERMINAL_CLOSE_TTL_MS,
+    expectedPairingRevision: currentPairingRevision,
+    expectedTerminalHandle: handoff.hostTerminalHandle,
+    expectedTerminalCloseHandle: handoff.hostTerminalCloseHandle
+  }
+  pendingExplicitTerminalCloseByLocalKey.set(key, pending)
+  const expiryTimer = setTimeout(() => {
+    if (pendingExplicitTerminalCloseByLocalKey.get(key) === pending) {
+      pendingExplicitTerminalCloseByLocalKey.delete(key)
+      pending.expire()
+    }
+  }, PROVISIONAL_TERMINAL_CLOSE_TTL_MS)
+  ;(expiryTimer as unknown as { unref?: () => void }).unref?.()
+  return true
 }
 
 function isReadyTerminalTab(
@@ -1163,6 +1253,7 @@ function updateHostSessionTabIdMappings(args: {
   terminalTabs: readonly TerminalTab[]
   browserTabs: readonly MirroredBrowserTab[]
   editorTabs: readonly MirroredEditorTab[]
+  generationCloseAuthorityRequired: boolean
 }): void {
   const keyPrefix = `${args.environmentId}:${args.worktreeId}:`
   for (const key of hostSessionTabIdByLocalKey.keys()) {
@@ -1170,15 +1261,50 @@ function updateHostSessionTabIdMappings(args: {
       hostSessionTabIdByLocalKey.delete(key)
     }
   }
+  for (const key of terminalCloseAuthorityByLocalKey.keys()) {
+    if (key.startsWith(keyPrefix)) {
+      terminalCloseAuthorityByLocalKey.delete(key)
+    }
+  }
 
   const mirroredTerminalIds = new Set(args.terminalTabs.map((tab) => tab.id))
   for (const surface of args.terminalSurfaces) {
     const localId = toWebTerminalSurfaceTabId(surface.parentTabId)
     if (mirroredTerminalIds.has(localId)) {
-      hostSessionTabIdByLocalKey.set(
-        hostSessionTabMappingKey({ ...args, tabId: localId }),
-        surface.parentTabId
-      )
+      const mappingKey = hostSessionTabMappingKey({ ...args, tabId: localId })
+      hostSessionTabIdByLocalKey.set(mappingKey, surface.parentTabId)
+      if (surface.status === 'ready') {
+        if (surface.terminalCloseHandle) {
+          terminalCloseAuthorityByLocalKey.set(mappingKey, {
+            kind: 'generation-bound',
+            handle: surface.terminalCloseHandle
+          })
+        } else if (surface.terminalCloseLegacy || !args.generationCloseAuthorityRequired) {
+          terminalCloseAuthorityByLocalKey.set(mappingKey, { kind: 'legacy-tab-id' })
+        }
+        const pendingClose = pendingExplicitTerminalCloseByLocalKey.get(mappingKey)
+        if (pendingClose) {
+          const pairingStillMatches =
+            getRuntimeEnvironmentRevision(args.environmentId) ===
+            pendingClose.expectedPairingRevision
+          const streamHandleMatches = surface.terminal === pendingClose.expectedTerminalHandle
+          const closeHandleMatches = pendingClose.expectedTerminalCloseHandle
+            ? surface.terminalCloseHandle === pendingClose.expectedTerminalCloseHandle
+            : surface.terminalCloseLegacy || !args.generationCloseAuthorityRequired
+          if (
+            Date.now() <= pendingClose.expiresAt &&
+            pairingStillMatches &&
+            streamHandleMatches &&
+            closeHandleMatches
+          ) {
+            pendingExplicitTerminalCloseByLocalKey.delete(mappingKey)
+            queueMicrotask(pendingClose.close)
+          } else if (!pairingStillMatches || !streamHandleMatches || surface.terminalCloseHandle) {
+            pendingExplicitTerminalCloseByLocalKey.delete(mappingKey)
+            queueMicrotask(pendingClose.expire)
+          }
+        }
+      }
     }
   }
   for (const entry of args.browserTabs) {
@@ -2066,7 +2192,13 @@ export function applyWebSessionTabsSnapshot(
     terminalSurfaces: terminalSurfaceTabs,
     terminalTabs: mirroredTerminalTabEntries,
     browserTabs: mirroredBrowserTabs,
-    editorTabs: mirroredEditorTabs
+    editorTabs: mirroredEditorTabs,
+    generationCloseAuthorityRequired:
+      snapshot.terminalCloseAuthority === 'generation-bound' ||
+      state.runtimeStatusByEnvironmentId
+        ?.get(environmentId)
+        ?.status?.capabilities?.includes(TERMINAL_EXPLICIT_CLOSE_AUTHORITY_RUNTIME_CAPABILITY) ===
+        true
   })
 
   const currentGroups = state.groupsByWorktree[worktreeId] ?? []

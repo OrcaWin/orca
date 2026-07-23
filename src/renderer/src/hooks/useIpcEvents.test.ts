@@ -17,8 +17,16 @@ import type { TuiAgent } from '../../../shared/types'
 import { makePaneKey } from '../../../shared/stable-pane-id'
 import { YOLO_TUI_AGENT_ARGS } from '../../../shared/tui-agent-permissions'
 
-const { closeTerminalTabMock } = vi.hoisted(() => ({
-  closeTerminalTabMock: vi.fn()
+const { closeLocalTerminalTabStateMock, closeTerminalTabMock, setAppStoreStateMock } = vi.hoisted(
+  () => ({
+    closeLocalTerminalTabStateMock: vi.fn(),
+    closeTerminalTabMock: vi.fn(),
+    setAppStoreStateMock: vi.fn()
+  })
+)
+
+vi.mock('@/components/terminal/close-local-terminal-tab-state', () => ({
+  closeLocalTerminalTabState: closeLocalTerminalTabStateMock
 }))
 
 vi.mock('@/components/terminal/terminal-tab-actions', () => ({
@@ -2812,7 +2820,9 @@ describe('useIpcEvents browser tab close routing', () => {
   beforeEach(() => {
     vi.resetModules()
     vi.unstubAllGlobals()
+    closeLocalTerminalTabStateMock.mockReset()
     closeTerminalTabMock.mockReset()
+    setAppStoreStateMock.mockReset()
   })
 
   type RequestTabCloseListener = (data: {
@@ -2824,6 +2834,15 @@ describe('useIpcEvents browser tab close routing', () => {
   type CloseTerminalListener = (data: { tabId: string; paneRuntimeId?: number | null }) => void
   type CloseSessionTabListener = (data: { tabId: string; worktreeId: string }) => void
   type TerminalTabCloseRequestListener = (data: { requestId: string; tabId: string }) => void
+  type TerminalTabCloseValidationRequestListener = (data: {
+    requestId: string
+    tabId: string
+    expectedPtyIds: string[]
+  }) => void
+  type TerminalTabCloseFinalizationListener = (data: {
+    tabId: string
+    expectedPtyIds: string[]
+  }) => void
 
   async function useIpcEventsForCloseRouting({
     closeActiveTabListenerRef,
@@ -2833,7 +2852,10 @@ describe('useIpcEvents browser tab close routing', () => {
     requestTabCloseListenerRef,
     replyTabClose = vi.fn(),
     terminalTabCloseRequestListenerRef,
+    terminalTabCloseValidationRequestListenerRef,
+    terminalTabCloseFinalizationListenerRef,
     respondTerminalTabClose = vi.fn(),
+    respondTerminalTabCloseValidation = vi.fn(),
     persistWorkspaceSession = vi.fn().mockResolvedValue(undefined)
   }: {
     closeActiveTabListenerRef?: { current: CloseActiveTabListener | null }
@@ -2843,7 +2865,14 @@ describe('useIpcEvents browser tab close routing', () => {
     requestTabCloseListenerRef?: { current: RequestTabCloseListener | null }
     replyTabClose?: ReturnType<typeof vi.fn>
     terminalTabCloseRequestListenerRef?: { current: TerminalTabCloseRequestListener | null }
+    terminalTabCloseValidationRequestListenerRef?: {
+      current: TerminalTabCloseValidationRequestListener | null
+    }
+    terminalTabCloseFinalizationListenerRef?: {
+      current: TerminalTabCloseFinalizationListener | null
+    }
     respondTerminalTabClose?: ReturnType<typeof vi.fn>
+    respondTerminalTabCloseValidation?: ReturnType<typeof vi.fn>
     persistWorkspaceSession?: ReturnType<typeof vi.fn>
   }): Promise<void> {
     vi.doMock('react', async () => {
@@ -2859,6 +2888,7 @@ describe('useIpcEvents browser tab close routing', () => {
     const appStoreModule = {
       useAppStore: {
         subscribe: vi.fn(() => () => {}),
+        setState: setAppStoreStateMock,
         getState: () => ({
           setUpdateStatus: vi.fn(),
           fetchRepos: vi.fn(),
@@ -2931,6 +2961,23 @@ describe('useIpcEvents browser tab close routing', () => {
     vi.doMock('@/lib/workspace-session', () => ({
       buildWorkspaceSessionPayload: vi.fn(() => ({}))
     }))
+    vi.doMock('@/store/slices/terminal-tab-retirement', () => ({
+      buildTerminalTabRetirementPlan: (state: Record<string, unknown>, tabId: string) => ({
+        tabId,
+        worktreeId: 'wt-1',
+        ptyIds: (state.ptyIdsByTabId as Record<string, string[]> | undefined)?.[tabId] ?? ['pty-1'],
+        localOrSshPtyIds: (state.ptyIdsByTabId as Record<string, string[]> | undefined)?.[
+          tabId
+        ] ?? ['pty-1'],
+        runtimeTerminals: [],
+        cleanupOnlyPtyIds: [],
+        sharedPtyIds: [],
+        unroutablePtyIds: []
+      }),
+      collectCurrentTerminalPtyIdsForTab: (state: Record<string, unknown>, tabId: string) =>
+        (state.ptyIdsByTabId as Record<string, string[]> | undefined)?.[tabId] ?? ['pty-1'],
+      isTerminalTabPresent: () => false
+    }))
 
     vi.stubGlobal('window', {
       dispatchEvent: vi.fn(),
@@ -2988,6 +3035,21 @@ describe('useIpcEvents browser tab close routing', () => {
             return () => {}
           },
           respondTerminalTabClose,
+          onTerminalTabCloseValidationRequest: (
+            listener: TerminalTabCloseValidationRequestListener
+          ) => {
+            if (terminalTabCloseValidationRequestListenerRef) {
+              terminalTabCloseValidationRequestListenerRef.current = listener
+            }
+            return () => {}
+          },
+          respondTerminalTabCloseValidation,
+          onTerminalTabCloseFinalization: (listener: TerminalTabCloseFinalizationListener) => {
+            if (terminalTabCloseFinalizationListenerRef) {
+              terminalTabCloseFinalizationListenerRef.current = listener
+            }
+            return () => {}
+          },
           onSleepWorktree: () => () => {},
           onResumeSleepingAgents: () => () => {},
           onNewBrowserTab: () => () => {},
@@ -3192,6 +3254,136 @@ describe('useIpcEvents browser tab close routing', () => {
       requestId: 'close-pinned',
       error: 'terminal_tab_pinned'
     })
+  })
+
+  it('validates an exact generation-bound host close without mutating renderer state', async () => {
+    const listenerRef: { current: TerminalTabCloseValidationRequestListener | null } = {
+      current: null
+    }
+    const respond = vi.fn()
+    const persistWorkspaceSession = vi.fn().mockResolvedValue(undefined)
+    await useIpcEventsForCloseRouting({
+      getState: () => ({
+        settings: { activeRuntimeEnvironmentId: 'nested-runtime' },
+        ptyIdsByTabId: { 'terminal-1': ['pty-1'] },
+        unifiedTabsByWorktree: {
+          'wt-1': [
+            { id: 'terminal-1', entityId: 'terminal-1', contentType: 'terminal', isPinned: false }
+          ]
+        }
+      }),
+      terminalTabCloseValidationRequestListenerRef: listenerRef,
+      respondTerminalTabCloseValidation: respond,
+      persistWorkspaceSession
+    })
+
+    listenerRef.current?.({
+      requestId: 'validation-1',
+      tabId: 'terminal-1',
+      expectedPtyIds: ['pty-1']
+    })
+
+    expect(respond).toHaveBeenCalledWith({ requestId: 'validation-1' })
+    expect(closeLocalTerminalTabStateMock).not.toHaveBeenCalled()
+    expect(persistWorkspaceSession).not.toHaveBeenCalled()
+    expect(setAppStoreStateMock).not.toHaveBeenCalled()
+  })
+
+  it('rejects changed bindings or a newly pinned tab during read-only validation', async () => {
+    const listenerRef: { current: TerminalTabCloseValidationRequestListener | null } = {
+      current: null
+    }
+    const respond = vi.fn()
+    await useIpcEventsForCloseRouting({
+      getState: () => ({
+        ptyIdsByTabId: { 'terminal-1': ['pty-1'] },
+        unifiedTabsByWorktree: {
+          'wt-1': [
+            { id: 'terminal-1', entityId: 'terminal-1', contentType: 'terminal', isPinned: true }
+          ]
+        }
+      }),
+      terminalTabCloseValidationRequestListenerRef: listenerRef,
+      respondTerminalTabCloseValidation: respond
+    })
+
+    listenerRef.current?.({
+      requestId: 'stale-bindings',
+      tabId: 'terminal-1',
+      expectedPtyIds: ['replacement-pty']
+    })
+    listenerRef.current?.({
+      requestId: 'newly-pinned',
+      tabId: 'terminal-1',
+      expectedPtyIds: ['pty-1']
+    })
+
+    expect(respond).toHaveBeenCalledWith({
+      requestId: 'stale-bindings',
+      error: 'terminal_handle_stale'
+    })
+    expect(respond).toHaveBeenCalledWith({
+      requestId: 'newly-pinned',
+      error: 'terminal_tab_pinned'
+    })
+    expect(closeLocalTerminalTabStateMock).not.toHaveBeenCalled()
+  })
+
+  it('finalizes local state only when current PTYs are a subset of the stopped generation', async () => {
+    const listenerRef: { current: TerminalTabCloseFinalizationListener | null } = {
+      current: null
+    }
+    await useIpcEventsForCloseRouting({
+      getState: () => ({
+        ptyIdsByTabId: { 'terminal-1': ['pty-left'] },
+        unifiedTabsByWorktree: {
+          'wt-1': [
+            { id: 'terminal-1', entityId: 'terminal-1', contentType: 'terminal', isPinned: false }
+          ]
+        }
+      }),
+      terminalTabCloseFinalizationListenerRef: listenerRef
+    })
+
+    listenerRef.current?.({
+      tabId: 'terminal-1',
+      expectedPtyIds: ['pty-left', 'pty-right']
+    })
+
+    expect(closeLocalTerminalTabStateMock).toHaveBeenCalledWith(
+      'terminal-1',
+      expect.objectContaining({
+        reason: 'cleanup',
+        captureRecentlyClosed: false,
+        remoteCloseOwnedByHost: true,
+        localPtyTeardownOwnedExternally: true,
+        precomputedRetirementPlan: expect.objectContaining({ tabId: 'terminal-1' })
+      })
+    )
+  })
+
+  it('does not finalize over a replacement PTY generation', async () => {
+    const listenerRef: { current: TerminalTabCloseFinalizationListener | null } = {
+      current: null
+    }
+    await useIpcEventsForCloseRouting({
+      getState: () => ({
+        ptyIdsByTabId: { 'terminal-1': ['replacement-pty'] },
+        unifiedTabsByWorktree: {
+          'wt-1': [
+            { id: 'terminal-1', entityId: 'terminal-1', contentType: 'terminal', isPinned: false }
+          ]
+        }
+      }),
+      terminalTabCloseFinalizationListenerRef: listenerRef
+    })
+
+    listenerRef.current?.({
+      tabId: 'terminal-1',
+      expectedPtyIds: ['retired-pty']
+    })
+
+    expect(closeLocalTerminalTabStateMock).not.toHaveBeenCalled()
   })
 
   it('confirms before closing a pinned active browser tab from the native close event', async () => {

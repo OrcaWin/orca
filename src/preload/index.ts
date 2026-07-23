@@ -3749,6 +3749,25 @@ const api = {
     respondTerminalTabClose: (response) => {
       ipcRenderer.send('ui:terminalTabCloseResponse', response)
     },
+    onTerminalTabCloseValidationRequest: (callback) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        request: Parameters<typeof callback>[0]
+      ) => callback(request)
+      ipcRenderer.on('ui:terminalTabCloseValidationRequest', listener)
+      return () => ipcRenderer.removeListener('ui:terminalTabCloseValidationRequest', listener)
+    },
+    respondTerminalTabCloseValidation: (response) => {
+      ipcRenderer.send('ui:terminalTabCloseValidationResponse', response)
+    },
+    onTerminalTabCloseFinalization: (callback) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        request: Parameters<typeof callback>[0]
+      ) => callback(request)
+      ipcRenderer.on('ui:terminalTabCloseFinalization', listener)
+      return () => ipcRenderer.removeListener('ui:terminalTabCloseFinalization', listener)
+    },
     onSleepWorktree: (callback: (data: { worktreeId: string }) => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent, data: { worktreeId: string }) =>
         callback(data)

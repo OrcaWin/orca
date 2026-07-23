@@ -657,6 +657,69 @@ describe('DaemonPtyAdapter (IPtyProvider)', () => {
   })
 
   describe('shutdown', () => {
+    it('rejects exact shutdown through a preserved v26 daemon before issuing kill', async () => {
+      const { id } = await adapter.spawn({ cols: 80, rows: 24 })
+      const legacy = new DaemonPtyAdapter({ socketPath, tokenPath, protocolVersion: 26 })
+      try {
+        const forceKillCallsBeforeShutdown = vi.mocked(lastSubprocess.forceKill).mock.calls.length
+        expect(legacy.supportsIncarnationBoundShutdown()).toBe(false)
+        await expect(
+          legacy.shutdown(id, {
+            immediate: true,
+            expectedIncarnationId: 'incarnation-a'
+          })
+        ).rejects.toThrow('pty_incarnation_shutdown_unsupported')
+        expect(lastSubprocess?.forceKill).toHaveBeenCalledTimes(forceKillCallsBeforeShutdown)
+      } finally {
+        legacy.dispose()
+      }
+    })
+
+    it('rejects a mismatched v27 incarnation without killing its replacement', async () => {
+      const result = await adapter.spawn({ cols: 80, rows: 24 })
+
+      await expect(
+        adapter.shutdown(result.id, {
+          immediate: true,
+          expectedIncarnationId: 'replacement-incarnation'
+        })
+      ).rejects.toThrow('pty_incarnation_stale')
+
+      expect(lastSubprocess.forceKill).not.toHaveBeenCalled()
+      await adapter.shutdown(result.id, {
+        immediate: true,
+        expectedIncarnationId: result.incarnationId
+      })
+      expect(lastSubprocess.forceKill).toHaveBeenCalledOnce()
+    })
+
+    it('does not dispatch kill after cancellation wins during daemon connection', async () => {
+      const result = await adapter.spawn({ cols: 80, rows: 24 })
+      let finishConnection!: () => void
+      const connection = new Promise<void>((resolve) => {
+        finishConnection = resolve
+      })
+      const ensureConnected = vi
+        .spyOn(DaemonClient.prototype, 'ensureConnected')
+        .mockImplementationOnce(() => connection)
+      const controller = new AbortController()
+
+      try {
+        const shutdown = adapter.shutdown(result.id, {
+          immediate: true,
+          expectedIncarnationId: result.incarnationId,
+          signal: controller.signal
+        })
+        controller.abort()
+        finishConnection()
+
+        await expect(shutdown).rejects.toThrow('client_disconnected')
+        expect(lastSubprocess.forceKill).not.toHaveBeenCalled()
+      } finally {
+        ensureConnected.mockRestore()
+      }
+    })
+
     it('kills the session', async () => {
       const { id } = await adapter.spawn({ cols: 80, rows: 24 })
       await adapter.shutdown(id, { immediate: false })

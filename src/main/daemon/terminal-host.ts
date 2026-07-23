@@ -100,7 +100,14 @@ export class TerminalHost {
     this.sessions.get(sessionId)?.resumeProducer()
   }
 
-  kill(sessionId: string, opts: { immediate?: boolean } = {}): Promise<void> {
+  kill(
+    sessionId: string,
+    opts: { immediate?: boolean; expectedIncarnationId?: string } = {}
+  ): Promise<void> {
+    const current = this.sessions.get(sessionId)
+    if (opts.expectedIncarnationId && current?.incarnationId !== opts.expectedIncarnationId) {
+      return Promise.reject(new Error('pty_incarnation_stale'))
+    }
     const pending = this.sessionTeardown.get(sessionId)
     if (pending) {
       return Promise.resolve(

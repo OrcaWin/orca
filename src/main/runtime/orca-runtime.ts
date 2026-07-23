@@ -159,6 +159,7 @@ import type {
   Tab,
   TabGroupLayoutNode,
   TerminalQuickCommand,
+  TerminalExplicitCloseOperation,
   TerminalLayoutSnapshot,
   TerminalPaneLayoutNode,
   TerminalTab,
@@ -953,6 +954,8 @@ type RuntimeStore = {
   getGitHubCache: Store['getGitHubCache']
   getWorkspaceSession?: Store['getWorkspaceSession']
   setWorkspaceSession?: Store['setWorkspaceSession']
+  setTerminalExplicitCloseOperation?: Store['setTerminalExplicitCloseOperation']
+  completeTerminalExplicitCloseOperation?: Store['completeTerminalExplicitCloseOperation']
   flushOrThrow?: Store['flushOrThrow']
   persistPtyBinding?: Store['persistPtyBinding']
   getSshRemotePtyLeases?: Store['getSshRemotePtyLeases']
@@ -1112,6 +1115,7 @@ function isCursorAgentOrchestrationTarget(
 type RuntimePtyWorktreeRecord = {
   ptyId: string
   incarnationId: PtyIncarnationId | null
+  incarnationBoundShutdown: boolean | null
   worktreeId: string
   connectionId: string | null
   // Why: a Windows host can own both native and WSL panes; preamble command
@@ -1414,7 +1418,12 @@ type RuntimePtyController = {
   kill(ptyId: string): boolean
   stopAndWait?(
     ptyId: string,
-    opts?: { keepHistory?: boolean; deadlineMs?: number }
+    opts?: {
+      keepHistory?: boolean
+      deadlineMs?: number
+      expectedIncarnationId?: string
+      signal?: AbortSignal
+    }
   ): Promise<boolean>
   markReversibleStops?(ptyIds: readonly string[]): () => void
   getCwd?(ptyId: string): Promise<string | null>
@@ -1425,6 +1434,7 @@ type RuntimePtyController = {
   resize?(ptyId: string, cols: number, rows: number): boolean
   // Why: exact-id mobile polls should not enumerate every local and SSH PTY.
   hasPty?(ptyId: string): boolean | null
+  supportsIncarnationBoundShutdown?(ptyId: string, signal?: AbortSignal): Promise<boolean | null>
   listProcesses?(): Promise<PtyProcessInfo[]>
   serializeBuffer?(
     ptyId: string,
@@ -1478,6 +1488,7 @@ function getAgentLaunchPlatformForRepo(
 // Why: long enough for a phone to reconnect and retry a create whose response
 // was lost, short enough that an intentional later re-resume forks fresh.
 const MOBILE_TERMINAL_CREATE_RESULT_TTL_MS = 60_000
+const TERMINAL_EXPLICIT_CLOSE_DEADLINE_MS = 45_000
 // Why: same idempotency window for worktree.create — a phone whose create was
 // interrupted by a connection migration retries with the same clientMutationId
 // and reuses the just-created worktree instead of spawning a duplicate.
@@ -1604,6 +1615,11 @@ type RuntimeNotifier = {
   ): Promise<RuntimeMarkdownSaveTabResult>
   closeTerminal(tabId: string, paneRuntimeId?: number): void
   closeTerminalTab?(tabId: string): Promise<void>
+  validateTerminalTabForHostClose?(
+    tabId: string,
+    options: { expectedPtyIds: string[] }
+  ): Promise<void>
+  finalizeTerminalTabForHostClose?(tabId: string, expectedPtyIds: string[]): void
   sleepWorktree(worktreeId: string): void
   // Why: a phone opening a worktree wakes its slept agents by asking the host
   // renderer to run its own navigation-free wake (experimental agent sleep);
@@ -1635,6 +1651,22 @@ type TerminalHandleRecord = {
   leafId: string
   ptyId: string | null
   ptyGeneration: number
+  closeBinding?: RuntimeTerminalParentBinding
+}
+
+type RuntimeTerminalParentBinding = {
+  ptyId: string
+  incarnationId: string
+  worktreeId: string
+  parentTabId: string
+  leafId: string
+  lifecycleGeneration: number
+}
+
+type RuntimeTerminalOtherOwnership = 'exclusive' | 'shared' | 'ambiguous'
+
+type RuntimeTerminalTabCloseExpectation = RuntimeTerminalParentBinding & {
+  handle: string
 }
 
 type TerminalWaiter = {
@@ -2405,6 +2437,7 @@ export class OrcaRuntimeService {
   // Why: concurrent clients sleeping one host workspace must share one physical teardown.
   private terminalSleepByWorktreeId = new Map<string, Promise<RuntimeWorktreeTerminalSleepResult>>()
   private terminalMutationTailByWorktreeId = new Map<string, Promise<void>>()
+  private activeTerminalExplicitCloseOperationIds = new Set<string>()
   private terminalSleepStateByWorktreeId = new Map<
     string,
     {
@@ -2454,7 +2487,7 @@ export class OrcaRuntimeService {
     createMobileSessionTabsNotifyCoalescer((worktreeId) =>
       this.notifyMobileSessionTabsChangedNow(worktreeId)
     )
-  private pendingMobileSessionPtyInventoryRefresh: Promise<Set<string> | null> | null = null
+  private pendingMobileSessionPtyInventoryRefreshes = new Map<string, Promise<Set<string> | null>>()
   private leaves = new Map<string, RuntimeLeafRecord>()
   // Why: PTY output is a per-keystroke hot path. Looking up affected leaves by
   // ptyId keeps active TUI redraws independent of the total open terminal count.
@@ -4846,7 +4879,7 @@ export class OrcaRuntimeService {
     leafId: string,
     candidatePtyId: string | null | undefined
   ): boolean {
-    const session = this.store?.getWorkspaceSession?.()
+    const session = this.getWorkspaceSessionForWorktree(worktreeId) ?? undefined
     const repoId = getRepoIdFromWorktreeId(worktreeId)
     if (
       !hasHostAuthoritativeTerminalMembership(session, worktreeId) &&
@@ -4917,6 +4950,11 @@ export class OrcaRuntimeService {
     incarnationId: string,
     exactSurfaces: readonly Pick<RetiredTerminalSurface, 'worktreeId' | 'parentTabId' | 'leafId'>[]
   ): void {
+    const authoritativeSurfaceKeys = new Set(
+      exactSurfaces.map(
+        (surface) => `${surface.worktreeId}\0${surface.parentTabId}\0${surface.leafId}`
+      )
+    )
     const retiredSurfaceByKey = new Map<string, RetiredTerminalSurface>()
     for (const surface of exactSurfaces) {
       retiredSurfaceByKey.set(`${surface.worktreeId}\0${surface.parentTabId}\0${surface.leafId}`, {
@@ -4946,34 +4984,49 @@ export class OrcaRuntimeService {
       return
     }
     let publishableRetiredSurfaces = retiredSurfaces
-    const session = this.store?.getWorkspaceSession?.()
-    if (session) {
+    if (this.store?.getWorkspaceSession) {
       // Why: publishing absence before its host membership fence is durable lets a crash or
       // stale renderer write resurrect the retired surface.
       if (!this.store?.setWorkspaceSession || !this.store.flushOrThrow) {
         return
       }
-      let nextSession = session
-      const acceptedSurfaces: RetiredTerminalSurface[] = []
+      publishableRetiredSurfaces = []
+      const surfacesByHostId = new Map<string, RetiredTerminalSurface[]>()
       for (const surface of retiredSurfaces) {
-        const candidate = retireTerminalSurfaceFromPersistence(nextSession, surface)
-        if (candidate !== nextSession) {
-          acceptedSurfaces.push(surface)
-          nextSession = candidate
+        const hostId = this.getWorkspaceSessionHostIdForWorktree(surface.worktreeId)
+        const hostSurfaces = surfacesByHostId.get(hostId)
+        if (hostSurfaces) {
+          hostSurfaces.push(surface)
+        } else {
+          surfacesByHostId.set(hostId, [surface])
         }
       }
-      if (acceptedSurfaces.length === 0) {
-        return
-      }
-      try {
-        this.store.setWorkspaceSession(nextSession)
-        this.store.flushOrThrow()
-      } catch (error) {
-        console.error('[runtime] failed to persist terminal retirement:', error)
-        return
+      for (const [hostId, hostSurfaces] of surfacesByHostId) {
+        let nextSession = this.store.getWorkspaceSession(hostId)
+        const acceptedSurfaces: RetiredTerminalSurface[] = []
+        for (const surface of hostSurfaces) {
+          const surfaceKey = `${surface.worktreeId}\0${surface.parentTabId}\0${surface.leafId}`
+          const candidate = retireTerminalSurfaceFromPersistence(nextSession, surface, {
+            // Why: a live host pane may outrun its session write; its exit still needs a durable absence fence.
+            recordAuthoritativelyAbsentSurface: authoritativeSurfaceKeys.has(surfaceKey)
+          })
+          if (candidate !== nextSession) {
+            acceptedSurfaces.push(surface)
+            nextSession = candidate
+          }
+        }
+        if (acceptedSurfaces.length === 0) {
+          continue
+        }
+        try {
+          this.store.setWorkspaceSession(nextSession, hostId)
+          this.store.flushOrThrow()
+          publishableRetiredSurfaces.push(...acceptedSurfaces)
+        } catch (error) {
+          console.error('[runtime] failed to persist terminal retirement:', error)
+        }
       }
       // Why: one repo epoch can cover multiple exits, but only surfaces individually accepted by persistence may disappear.
-      publishableRetiredSurfaces = acceptedSurfaces
     } else {
       for (const surface of retiredSurfaces) {
         const repoId = getRepoIdFromWorktreeId(surface.worktreeId)
@@ -5470,22 +5523,28 @@ export class OrcaRuntimeService {
   private async refreshMobileSessionPtyRecords(
     targetWorktreeId: string | null = null
   ): Promise<Set<string> | null> {
-    if (targetWorktreeId !== FLOATING_TERMINAL_WORKTREE_ID) {
-      const pending = this.pendingMobileSessionPtyInventoryRefresh
-      if (pending) {
-        return pending
+    const refreshKey =
+      targetWorktreeId === FLOATING_TERMINAL_WORKTREE_ID ? '\0floating' : '\0non-floating'
+    const pending = this.pendingMobileSessionPtyInventoryRefreshes.get(refreshKey)
+    if (pending) {
+      const observedPtyIds = await pending
+      if (observedPtyIds) {
+        this.reconcileTerminalExplicitCloseOperations(observedPtyIds, targetWorktreeId)
       }
-      // Why: reconnect exit bursts share one authoritative daemon inventory
-      // instead of multiplying a full cross-generation list RPC per stale tab.
-      const refresh = this.performMobileSessionPtyRecordsRefresh(targetWorktreeId).finally(() => {
-        if (this.pendingMobileSessionPtyInventoryRefresh === refresh) {
-          this.pendingMobileSessionPtyInventoryRefresh = null
-        }
-      })
-      this.pendingMobileSessionPtyInventoryRefresh = refresh
-      return refresh
+      return observedPtyIds
     }
-    return await this.performMobileSessionPtyRecordsRefresh(targetWorktreeId)
+    // Why: only equal inventory scopes are interchangeable when deciding that a PTY is absent.
+    const refresh = this.performMobileSessionPtyRecordsRefresh(targetWorktreeId).finally(() => {
+      if (this.pendingMobileSessionPtyInventoryRefreshes.get(refreshKey) === refresh) {
+        this.pendingMobileSessionPtyInventoryRefreshes.delete(refreshKey)
+      }
+    })
+    this.pendingMobileSessionPtyInventoryRefreshes.set(refreshKey, refresh)
+    const observedPtyIds = await refresh
+    if (observedPtyIds) {
+      this.reconcileTerminalExplicitCloseOperations(observedPtyIds, targetWorktreeId)
+    }
+    return observedPtyIds
   }
 
   private async performMobileSessionPtyRecordsRefresh(
@@ -5497,9 +5556,120 @@ export class OrcaRuntimeService {
     // Why: floating PTY identity is explicit, so polling must not resolve every Git/SSH worktree.
     const isFloatingWorkspace = targetWorktreeId === FLOATING_TERMINAL_WORKTREE_ID
     const resolvedWorktrees = isFloatingWorkspace ? [] : await this.listResolvedWorktrees()
-    return await this.refreshPtyWorktreeRecordsFromController(
+    const observedPtyIds = await this.refreshPtyWorktreeRecordsFromController(
       resolvedWorktrees,
       isFloatingWorkspace ? targetWorktreeId : null
+    )
+    return observedPtyIds
+  }
+
+  private reconcileTerminalExplicitCloseOperations(
+    observedPtyIds: ReadonlySet<string>,
+    targetWorktreeId: string | null
+  ): void {
+    if (targetWorktreeId === FLOATING_TERMINAL_WORKTREE_ID) {
+      return
+    }
+    const worktreeIds = targetWorktreeId
+      ? [targetWorktreeId]
+      : [...this.getKnownWorkspaceSessionWorktreeIds()]
+    const reconciledOperationIds = new Set<string>()
+    for (const worktreeId of worktreeIds) {
+      if (this.terminalMutationTailByWorktreeId.has(runtimeWorktreeIdentityKey(worktreeId))) {
+        continue
+      }
+      const session = this.getWorkspaceSessionForWorktree(worktreeId)
+      for (const operation of Object.values(session?.terminalExplicitCloseOperationsById ?? {})) {
+        if (operation.worktreeId !== worktreeId || reconciledOperationIds.has(operation.id)) {
+          continue
+        }
+        if (this.activeTerminalExplicitCloseOperationIds.has(operation.id)) {
+          continue
+        }
+        reconciledOperationIds.add(operation.id)
+        try {
+          this.reconcileTerminalExplicitCloseOperation(operation, observedPtyIds)
+        } catch (error) {
+          console.error('[runtime] failed to reconcile terminal close journal:', error)
+        }
+      }
+    }
+  }
+
+  private reconcileTerminalExplicitCloseOperation(
+    operation: TerminalExplicitCloseOperation,
+    observedPtyIds: ReadonlySet<string>
+  ): void {
+    const stopSurfaces = operation.surfaces.filter(
+      (surface) => surface.incarnationId !== undefined && surface.lifecycleGeneration !== undefined
+    )
+    let hasAmbiguousSurface = false
+    const deadStopSurfaces = stopSurfaces.filter((surface) => {
+      if (!observedPtyIds.has(surface.ptyId)) {
+        return true
+      }
+      const current = this.ptysById.get(surface.ptyId)
+      if (!current?.incarnationId) {
+        hasAmbiguousSurface = true
+        return false
+      }
+      return current.incarnationId !== surface.incarnationId
+    })
+    const deadRetireOnlySurfaces = operation.surfaces.filter((surface) => {
+      if (surface.lifecycleGeneration !== undefined) {
+        return false
+      }
+      if (!observedPtyIds.has(surface.ptyId)) {
+        return true
+      }
+      const current = this.ptysById.get(surface.ptyId)
+      if (
+        surface.incarnationId !== undefined &&
+        current?.incarnationId !== undefined &&
+        current.incarnationId !== surface.incarnationId
+      ) {
+        return true
+      }
+      hasAmbiguousSurface = true
+      return false
+    })
+    if (hasAmbiguousSurface) {
+      return
+    }
+    const persistedRetirements = this.persistTerminalExplicitCloseRetirements(operation, [
+      ...deadStopSurfaces,
+      ...deadRetireOnlySurfaces
+    ])
+    this.publishTerminalExplicitCloseRetirements(
+      operation.worktreeId,
+      operation.parentTabId,
+      persistedRetirements
+    )
+    this.republishMobileSessionTabsSnapshot(operation.worktreeId)
+  }
+
+  private isTerminalSurfaceCloseQuarantined(
+    worktreeId: string,
+    parentTabId: string,
+    leafId: string,
+    ptyId: string
+  ): boolean {
+    if (!this.isTerminalParentCloseQuarantined(worktreeId, parentTabId)) {
+      return false
+    }
+    const session = this.getWorkspaceSessionForWorktree(worktreeId)
+    return Object.values(session?.terminalExplicitCloseOperationsById ?? {}).some(
+      (operation) =>
+        operation.worktreeId === worktreeId &&
+        operation.parentTabId === parentTabId &&
+        operation.surfaces.some((surface) => surface.leafId === leafId || surface.ptyId === ptyId)
+    )
+  }
+
+  private isTerminalParentCloseQuarantined(worktreeId: string, parentTabId: string): boolean {
+    const session = this.getWorkspaceSessionForWorktree(worktreeId)
+    return Object.values(session?.terminalExplicitCloseOperationsById ?? {}).some(
+      (operation) => operation.worktreeId === worktreeId && operation.parentTabId === parentTabId
     )
   }
 
@@ -5848,14 +6018,33 @@ export class OrcaRuntimeService {
       reason?: RuntimeSessionTabCloseReason
       expectedPublicationEpoch?: string
       expectedTerminalHandle?: string
+      expectedTerminalClose?: RuntimeTerminalTabCloseExpectation
+      signal?: AbortSignal
     } = {}
   ): Promise<RuntimeMobileSessionTabCloseResult> {
+    const closeDeadline = options.expectedTerminalClose
+      ? Date.now() + TERMINAL_EXPLICIT_CLOSE_DEADLINE_MS
+      : null
+    const assertCloseActive = (): void => {
+      if (options.signal?.aborted) {
+        throw new Error('client_disconnected')
+      }
+      if (closeDeadline !== null && Date.now() >= closeDeadline) {
+        throw new Error('terminal_tab_close_timeout')
+      }
+    }
+    assertCloseActive()
     const explicitWorktreeId = this.getValidatedExplicitWorktreeIdSelector(worktreeSelector)
     const worktreeId =
       explicitWorktreeId ?? (await this.resolveWorktreeSelector(worktreeSelector)).id
+    assertCloseActive()
     this.hydrateHeadlessMobileSessionTabsFromWorkspaceSession(worktreeId)
     const observedPtyIds = await this.refreshMobileSessionPtyRecords()
+    assertCloseActive()
     const snapshot = this.mobileSessionTabsByWorktree.get(worktreeId)
+    if (options.expectedTerminalClose) {
+      this.assertCurrentTerminalTabCloseExpectation(options.expectedTerminalClose)
+    }
     if (options.reason !== undefined && options.reason !== 'user' && observedPtyIds === null) {
       // Why: keep-on-unknown must also restore the mirror the caller already pruned.
       this.republishMobileSessionTabsSnapshot(worktreeId)
@@ -5887,6 +6076,10 @@ export class OrcaRuntimeService {
         (candidate) => candidate.type === 'browser' && candidate.browserWorkspaceId === tabId
       )
     if (!tab) {
+      // Why: PTY exit retirement can win the race with its paired-client echo; that echo is already satisfied.
+      if (options.reason !== undefined && options.reason !== 'user') {
+        return { closed: true }
+      }
       throw new Error('tab_not_found')
     }
     if (options.expectedTerminalHandle !== undefined) {
@@ -5910,10 +6103,30 @@ export class OrcaRuntimeService {
       }
     }
     if (tab.type === 'terminal') {
+      if (this.isTerminalParentCloseQuarantined(worktreeId, tab.parentTabId)) {
+        this.republishMobileSessionTabsSnapshot(worktreeId)
+        return {
+          closed: true,
+          refused: true,
+          refusalReason: 'close-in-progress',
+          snapshotRepublished: true
+        }
+      }
       const parentLeafCount = snapshot!.tabs.filter(
         (candidate) => candidate.type === 'terminal' && candidate.parentTabId === tab.parentTabId
       ).length
       const closingWholeParent = tab.id !== tabId || parentLeafCount <= 1
+      if (closingWholeParent && options.expectedTerminalClose) {
+        await this.closeGenerationBoundTerminalParent({
+          worktreeId,
+          parentTabId: tab.parentTabId,
+          expected: options.expectedTerminalClose,
+          closeDeadline: closeDeadline!,
+          assertCloseActive,
+          signal: options.signal
+        })
+        return { closed: true }
+      }
       // Why: a non-'user' reason is a client-lifecycle echo ("terminal gone"),
       // not authorization to kill. Every destructive branch below can take the
       // whole parent down, so any live PTY under the parent means the echo is a
@@ -6063,7 +6276,7 @@ export class OrcaRuntimeService {
     if (!pty) {
       return null
     }
-    return this.handleByPtyId.get(pty.ptyId) ?? this.findHandleForPtyRecord(pty.ptyId)
+    return this.issuePtyHandle(pty)
   }
 
   private notifyRendererOfHeadlessTerminalClose(parentTabId: string): void {
@@ -6166,39 +6379,503 @@ export class OrcaRuntimeService {
     this.emitMobileSessionTabsSnapshot(nextSnapshot)
   }
 
+  private captureTerminalParentCloseBindings(
+    worktreeId: string,
+    snapshot: RuntimeMobileSessionTabsSnapshot,
+    parentTabId: string
+  ): RuntimeTerminalParentBinding[] {
+    const bindings = new Map<string, RuntimeTerminalParentBinding>()
+    for (const tab of snapshot.tabs) {
+      if (tab.type !== 'terminal' || tab.parentTabId !== parentTabId) {
+        continue
+      }
+      const liveLeaf = this.leaves.get(this.getLeafKey(tab.parentTabId, tab.leafId)) ?? null
+      const pty =
+        liveLeaf?.connected && liveLeaf.ptyId
+          ? (this.ptysById.get(liveLeaf.ptyId) ?? null)
+          : this.findPtyForMobileTerminalTab(worktreeId, tab)
+      const pane = parsePaneKey(pty?.paneKey ?? '')
+      if (!pty?.connected || !pane || pane.tabId !== parentTabId || pane.leafId !== tab.leafId) {
+        continue
+      }
+      const binding: RuntimeTerminalParentBinding = {
+        ptyId: pty.ptyId,
+        incarnationId: pty.incarnationId ?? '',
+        worktreeId,
+        parentTabId,
+        leafId: tab.leafId,
+        lifecycleGeneration: this.getPtyLifecycleGeneration(pty.ptyId)
+      }
+      if (!binding.incarnationId) {
+        throw new Error('terminal_handle_stale')
+      }
+      const prior = bindings.get(pty.ptyId)
+      if (prior && prior.leafId !== binding.leafId) {
+        throw new Error('terminal_handle_stale')
+      }
+      bindings.set(pty.ptyId, binding)
+    }
+    return [...bindings.values()]
+  }
+
+  private captureTerminalParentCloseSurfaces(
+    worktreeId: string,
+    snapshot: RuntimeMobileSessionTabsSnapshot,
+    parentTabId: string,
+    liveBindings: readonly RuntimeTerminalParentBinding[]
+  ): TerminalExplicitCloseOperation['surfaces'] {
+    const liveByLeafId = new Map(liveBindings.map((binding) => [binding.leafId, binding]))
+    const session = this.getWorkspaceSessionForWorktree(worktreeId)
+    const surfaces: TerminalExplicitCloseOperation['surfaces'] = []
+    for (const tab of snapshot.tabs) {
+      if (tab.type !== 'terminal' || tab.parentTabId !== parentTabId) {
+        continue
+      }
+      const ptyId = tab.ptyId ?? tab.parentLayout?.ptyIdsByLeafId?.[tab.leafId] ?? undefined
+      if (!ptyId) {
+        throw new Error('terminal_handle_stale')
+      }
+      const live = liveByLeafId.get(tab.leafId)
+      if (live) {
+        surfaces.push({
+          leafId: live.leafId,
+          ptyId: live.ptyId,
+          incarnationId: live.incarnationId,
+          lifecycleGeneration: live.lifecycleGeneration
+        })
+        continue
+      }
+      const persistedIncarnationId =
+        session?.terminalPtyIncarnationsByPaneKey?.[`${parentTabId}:${tab.leafId}`]
+      surfaces.push({
+        leafId: tab.leafId,
+        ptyId,
+        ...(persistedIncarnationId ? { incarnationId: persistedIncarnationId } : {})
+      })
+    }
+    if (surfaces.length === 0) {
+      throw new Error('terminal_handle_stale')
+    }
+    return surfaces
+  }
+
+  private assertCurrentTerminalParentCloseBindings(
+    expectedBindings: readonly RuntimeTerminalParentBinding[]
+  ): void {
+    const expectedKeys = new Set(
+      expectedBindings.map((binding) =>
+        JSON.stringify([
+          binding.ptyId,
+          binding.incarnationId,
+          binding.leafId,
+          binding.lifecycleGeneration
+        ])
+      )
+    )
+    for (const expected of expectedBindings) {
+      const pty = this.ptysById.get(expected.ptyId)
+      const pane = parsePaneKey(pty?.paneKey ?? '')
+      if (
+        !pty?.connected ||
+        pty.incarnationId !== expected.incarnationId ||
+        pty.worktreeId !== expected.worktreeId ||
+        pty.tabId !== expected.parentTabId ||
+        pane?.tabId !== expected.parentTabId ||
+        pane.leafId !== expected.leafId ||
+        this.getPtyLifecycleGeneration(expected.ptyId) !== expected.lifecycleGeneration
+      ) {
+        throw new Error('terminal_handle_stale')
+      }
+    }
+    const first = expectedBindings[0]
+    if (!first) {
+      throw new Error('terminal_handle_stale')
+    }
+    const currentKeys = new Set<string>()
+    for (const pty of this.ptysById.values()) {
+      if (
+        !pty.connected ||
+        pty.worktreeId !== first.worktreeId ||
+        pty.tabId !== first.parentTabId
+      ) {
+        continue
+      }
+      const pane = parsePaneKey(pty.paneKey ?? '')
+      if (!pane || pane.tabId !== first.parentTabId) {
+        throw new Error('terminal_handle_stale')
+      }
+      currentKeys.add(
+        JSON.stringify([
+          pty.ptyId,
+          pty.incarnationId,
+          pane.leafId,
+          this.getPtyLifecycleGeneration(pty.ptyId)
+        ])
+      )
+    }
+    if (currentKeys.size !== expectedKeys.size) {
+      throw new Error('terminal_handle_stale')
+    }
+    for (const key of currentKeys) {
+      if (!expectedKeys.has(key)) {
+        throw new Error('terminal_handle_stale')
+      }
+    }
+  }
+
+  private isCurrentTerminalParentBinding(binding: RuntimeTerminalParentBinding): boolean {
+    const pty = this.ptysById.get(binding.ptyId)
+    const pane = parsePaneKey(pty?.paneKey ?? '')
+    return Boolean(
+      pty?.connected &&
+      pty.incarnationId === binding.incarnationId &&
+      pty.worktreeId === binding.worktreeId &&
+      pty.tabId === binding.parentTabId &&
+      pane?.tabId === binding.parentTabId &&
+      pane.leafId === binding.leafId &&
+      this.getPtyLifecycleGeneration(binding.ptyId) === binding.lifecycleGeneration
+    )
+  }
+
+  private persistTerminalExplicitCloseOperation(operation: TerminalExplicitCloseOperation): void {
+    if (!this.store?.setTerminalExplicitCloseOperation) {
+      throw new Error('terminal_close_journal_unavailable')
+    }
+    this.store.setTerminalExplicitCloseOperation(
+      operation,
+      this.getWorkspaceSessionHostIdForWorktree(operation.worktreeId)
+    )
+  }
+
+  private persistTerminalExplicitCloseRetirements(
+    operation: TerminalExplicitCloseOperation,
+    surfaces: readonly TerminalExplicitCloseOperation['surfaces'][number][]
+  ): TerminalExplicitCloseOperation['surfaces'] {
+    if (!this.store?.completeTerminalExplicitCloseOperation) {
+      throw new Error('workspace_session_unavailable')
+    }
+    return this.store.completeTerminalExplicitCloseOperation(
+      operation,
+      surfaces,
+      this.getWorkspaceSessionHostIdForWorktree(operation.worktreeId)
+    )
+  }
+
+  private publishTerminalExplicitCloseRetirements(
+    worktreeId: string,
+    parentTabId: string,
+    surfaces: readonly TerminalExplicitCloseOperation['surfaces'][number][]
+  ): void {
+    let snapshot = this.mobileSessionTabsByWorktree.get(worktreeId)
+    if (!snapshot) {
+      return
+    }
+    for (const surface of surfaces) {
+      const retired = retireTerminalSurfacesFromSnapshot({
+        snapshot,
+        ptyId: surface.ptyId,
+        exactSurfaces: [{ parentTabId, leafId: surface.leafId }],
+        exactOnly: true
+      })
+      if (retired) {
+        snapshot = retired.snapshot
+      }
+    }
+    this.mobileSessionTabsByWorktree.set(worktreeId, snapshot)
+    this.emitMobileSessionTabsSnapshot(snapshot)
+  }
+
+  private async closeGenerationBoundTerminalParent(args: {
+    worktreeId: string
+    parentTabId: string
+    expected: RuntimeTerminalTabCloseExpectation
+    closeDeadline: number
+    assertCloseActive: () => void
+    signal?: AbortSignal
+  }): Promise<void> {
+    const releaseMutation = await this.acquireWorktreeTerminalMutation(
+      args.worktreeId,
+      args.closeDeadline,
+      args.signal,
+      'terminal_tab_close_timeout'
+    )
+    let journaled = false
+    let operation: TerminalExplicitCloseOperation | null = null
+    try {
+      args.assertCloseActive()
+      await this.refreshMobileSessionPtyRecords(args.worktreeId)
+      args.assertCloseActive()
+      this.assertCurrentTerminalTabCloseExpectation(args.expected)
+      const snapshot = this.mobileSessionTabsByWorktree.get(args.worktreeId)
+      if (!snapshot) {
+        throw new Error('terminal_handle_stale')
+      }
+      if (
+        snapshot.tabs.some(
+          (candidate) =>
+            candidate.type === 'terminal' &&
+            candidate.parentTabId === args.parentTabId &&
+            candidate.isPinned
+        )
+      ) {
+        throw new Error('terminal_tab_pinned')
+      }
+      const bindings = this.captureTerminalParentCloseBindings(
+        args.worktreeId,
+        snapshot,
+        args.parentTabId
+      )
+      if (!bindings.some((binding) => binding.ptyId === args.expected.ptyId)) {
+        throw new Error('terminal_handle_stale')
+      }
+      const surfaces = this.captureTerminalParentCloseSurfaces(
+        args.worktreeId,
+        snapshot,
+        args.parentTabId,
+        bindings
+      )
+      if (
+        surfaces.some(
+          (surface) =>
+            surface.lifecycleGeneration === undefined &&
+            this.ptysById.get(surface.ptyId)?.connected === true
+        )
+      ) {
+        throw new Error('terminal_handle_stale')
+      }
+      this.assertCurrentTerminalParentCloseBindings(bindings)
+      const expectedPtyIds = surfaces.map((surface) => surface.ptyId)
+      if (this.tabs.has(args.parentTabId)) {
+        if (!this.notifier?.validateTerminalTabForHostClose) {
+          throw new Error('terminal_close_validation_unavailable')
+        }
+        await this.notifier.validateTerminalTabForHostClose(args.parentTabId, {
+          expectedPtyIds
+        })
+        args.assertCloseActive()
+        await this.refreshMobileSessionPtyRecords(args.worktreeId)
+        args.assertCloseActive()
+        this.assertCurrentTerminalTabCloseExpectation(args.expected)
+        this.assertCurrentTerminalParentCloseBindings(bindings)
+      }
+      if (!this.ptyController?.stopAndWait) {
+        throw new Error('terminal_exact_stop_unavailable')
+      }
+
+      const session = this.getWorkspaceSessionForWorktree(args.worktreeId)
+      const ownershipByPtyId = new Map(
+        bindings.map((binding) => [
+          binding.ptyId,
+          this.classifyTerminalPtyOtherOwnership(
+            session,
+            snapshot,
+            args.worktreeId,
+            args.parentTabId,
+            binding.ptyId,
+            binding.incarnationId
+          )
+        ])
+      )
+      if ([...ownershipByPtyId.values()].includes('ambiguous')) {
+        throw new Error('terminal_handle_stale')
+      }
+      const sharedPtyIds = new Set(
+        [...ownershipByPtyId.entries()]
+          .filter(([, ownership]) => ownership === 'shared')
+          .map(([ptyId]) => ptyId)
+      )
+      operation = {
+        id: randomUUID(),
+        worktreeId: args.worktreeId,
+        parentTabId: args.parentTabId,
+        startedAt: Date.now(),
+        surfaces
+      }
+      this.activeTerminalExplicitCloseOperationIds.add(operation.id)
+      this.persistTerminalExplicitCloseOperation(operation)
+      journaled = true
+      args.assertCloseActive()
+
+      const stoppedPtyIds = new Set<string>()
+      for (const binding of bindings) {
+        args.assertCloseActive()
+        if (sharedPtyIds.has(binding.ptyId) || !this.isCurrentTerminalParentBinding(binding)) {
+          continue
+        }
+        const stopped = await this.ptyController.stopAndWait(binding.ptyId, {
+          deadlineMs: args.closeDeadline,
+          expectedIncarnationId: binding.incarnationId,
+          signal: args.signal
+        })
+        args.assertCloseActive()
+        if (stopped) {
+          stoppedPtyIds.add(binding.ptyId)
+        }
+      }
+
+      const finalObservedPtyIds = await this.refreshMobileSessionPtyRecords(args.worktreeId)
+      args.assertCloseActive()
+      if (!finalObservedPtyIds) {
+        throw new Error('terminal_liveness_unavailable')
+      }
+
+      const survivingBindings = bindings.filter(
+        (binding) =>
+          !sharedPtyIds.has(binding.ptyId) && this.isCurrentTerminalParentBinding(binding)
+      )
+      const replacementBindings = [...this.ptysById.values()].filter(
+        (pty) =>
+          pty.connected &&
+          pty.worktreeId === args.worktreeId &&
+          pty.tabId === args.parentTabId &&
+          !bindings.some(
+            (binding) => binding.ptyId === pty.ptyId && binding.incarnationId === pty.incarnationId
+          )
+      )
+      const replacementLeafIds = new Set<string>(
+        replacementBindings.flatMap((pty) => {
+          const pane = parsePaneKey(pty.paneKey ?? '')
+          return pane ? [pane.leafId] : []
+        })
+      )
+      const bindingByLeafId = new Map(bindings.map((binding) => [binding.leafId, binding]))
+      const retiredSurfaces = operation.surfaces.filter((surface) => {
+        const binding = bindingByLeafId.get(surface.leafId)
+        if (!binding) {
+          return !finalObservedPtyIds.has(surface.ptyId)
+        }
+        if (sharedPtyIds.has(binding.ptyId)) {
+          return true
+        }
+        if (finalObservedPtyIds.has(binding.ptyId)) {
+          return false
+        }
+        if (replacementLeafIds.has(binding.leafId)) {
+          return false
+        }
+        return stoppedPtyIds.has(binding.ptyId) || !this.isCurrentTerminalParentBinding(binding)
+      })
+      const closeIsPartial = retiredSurfaces.length < operation.surfaces.length
+      const persistedRetirements = this.persistTerminalExplicitCloseRetirements(
+        operation,
+        retiredSurfaces
+      )
+      this.publishTerminalExplicitCloseRetirements(
+        args.worktreeId,
+        operation.parentTabId,
+        persistedRetirements
+      )
+      journaled = false
+
+      if (closeIsPartial) {
+        this.republishMobileSessionTabsSnapshot(args.worktreeId)
+        throw Object.assign(new Error('terminal_tab_close_partial'), {
+          remainingPtyIds: [
+            ...new Set([
+              ...survivingBindings.map((binding) => binding.ptyId),
+              ...replacementBindings.map((binding) => binding.ptyId),
+              ...operation.surfaces
+                .filter((surface) => !retiredSurfaces.includes(surface))
+                .map((surface) => surface.ptyId)
+            ])
+          ]
+        })
+      }
+      this.notifier?.finalizeTerminalTabForHostClose?.(args.parentTabId, expectedPtyIds)
+    } catch (error) {
+      if (operation) {
+        this.activeTerminalExplicitCloseOperationIds.delete(operation.id)
+      }
+      if (journaled) {
+        try {
+          // Why: after the no-rollback point, only authoritative liveness may finish already-dead retirements.
+          const observedPtyIds = await this.refreshMobileSessionPtyRecords(args.worktreeId)
+          if (operation && observedPtyIds) {
+            this.reconcileTerminalExplicitCloseOperation(operation, observedPtyIds)
+            journaled = false
+          }
+        } catch {
+          // The durable journal remains for the next successful inventory refresh.
+        }
+      } else {
+        this.republishMobileSessionTabsSnapshot(args.worktreeId)
+      }
+      throw error
+    } finally {
+      if (operation) {
+        this.activeTerminalExplicitCloseOperationIds.delete(operation.id)
+      }
+      releaseMutation()
+    }
+  }
+
   private closeHeadlessMobileTerminalTab(
     worktreeId: string,
     snapshot: RuntimeMobileSessionTabsSnapshot,
     tab: RuntimeMobileSessionTerminalTab,
-    options: { killPtys?: boolean } = {}
+    options: {
+      killPtys?: boolean
+      expectedPtyIds?: readonly string[]
+      flushBeforeKill?: boolean
+    } = {}
   ): void {
+    const flushOrThrow = this.store?.flushOrThrow?.bind(this.store)
+    if (options.flushBeforeKill && !flushOrThrow) {
+      throw new Error('workspace_session_unavailable')
+    }
     const closedParentTabId = tab.parentTabId
+    const priorSession = this.getWorkspaceSessionForWorktree(worktreeId)
     const projectedPtyIds = this.removePersistedHeadlessTerminalTab(worktreeId, closedParentTabId)
+    if (options.flushBeforeKill) {
+      try {
+        flushOrThrow!()
+      } catch (error) {
+        if (priorSession) {
+          this.setWorkspaceSessionForWorktree(worktreeId, priorSession)
+        }
+        throw error
+      }
+    }
     // Why: local provider ids can be reused after restart, so a dormant
     // persisted id is not kill authority. SSH relay ids remain durable exact
     // identities even before pane metadata reconnects.
-    const ptyIdsToKill = new Set(projectedPtyIds.filter((ptyId) => parseAppSshPtyId(ptyId)))
-    for (const candidate of snapshot.tabs) {
-      if (candidate.type !== 'terminal' || candidate.parentTabId !== closedParentTabId) {
-        continue
-      }
-      const livePty = this.findPtyForMobileTerminalTab(worktreeId, candidate)
-      const ptyId = livePty?.ptyId ?? candidate.ptyId
-      const hasOtherOwner = snapshot.tabs.some(
-        (other) =>
-          other.type === 'terminal' &&
-          other.parentTabId !== closedParentTabId &&
-          other.ptyId === ptyId
+    const authoritativePtyIds = options.expectedPtyIds
+    const candidatePtyIds = authoritativePtyIds ?? projectedPtyIds.filter(parseAppSshPtyId)
+    const ptyIdsToKill = new Set(
+      candidatePtyIds.filter(
+        (ptyId) =>
+          this.classifyTerminalPtyOtherOwnership(
+            priorSession,
+            snapshot,
+            worktreeId,
+            closedParentTabId,
+            ptyId,
+            this.ptysById.get(ptyId)?.incarnationId ?? null
+          ) === 'exclusive'
       )
-      if (ptyId && !hasOtherOwner && (livePty || parseAppSshPtyId(ptyId))) {
-        // Why: a live serve leaf can exist before its debounced binding reaches
-        // persistence. Include it from the authoritative snapshot so split
-        // close cannot leave a provider process behind.
-        ptyIdsToKill.add(ptyId)
+    )
+    if (!authoritativePtyIds) {
+      for (const candidate of snapshot.tabs) {
+        if (candidate.type !== 'terminal' || candidate.parentTabId !== closedParentTabId) {
+          continue
+        }
+        const livePty = this.findPtyForMobileTerminalTab(worktreeId, candidate)
+        const ptyId = livePty?.ptyId ?? candidate.ptyId
+        const hasOtherOwner = snapshot.tabs.some(
+          (other) =>
+            other.type === 'terminal' &&
+            other.parentTabId !== closedParentTabId &&
+            other.ptyId === ptyId
+        )
+        if (ptyId && !hasOtherOwner && (livePty || parseAppSshPtyId(ptyId))) {
+          // Why: non-handle callers retain the pre-existing best-effort discovery behavior.
+          ptyIdsToKill.add(ptyId)
+        }
       }
     }
     if (options.killPtys !== false) {
       for (const ptyId of ptyIdsToKill) {
+        this.removeAgentTeamForPty(ptyId)
         this.ptyController?.kill(ptyId)
       }
     }
@@ -6225,6 +6902,79 @@ export class OrcaRuntimeService {
     }
     this.mobileSessionTabsByWorktree.set(worktreeId, nextSnapshot)
     this.emitMobileSessionTabsSnapshot(nextSnapshot)
+  }
+
+  private classifyTerminalPtyOtherOwnership(
+    session: WorkspaceSessionState | null,
+    snapshot: RuntimeMobileSessionTabsSnapshot,
+    worktreeId: string,
+    parentTabId: string,
+    ptyId: string,
+    incarnationId: string | null
+  ): RuntimeTerminalOtherOwnership {
+    const ownerPaneKeys = new Set<string>()
+    let hasUnidentifiedOwner = false
+    for (const candidate of snapshot.tabs) {
+      if (candidate.type !== 'terminal' || candidate.parentTabId === parentTabId) {
+        continue
+      }
+      if (candidate.ptyId === ptyId) {
+        ownerPaneKeys.add(`${candidate.parentTabId}:${candidate.leafId}`)
+      }
+      for (const [leafId, candidatePtyId] of Object.entries(
+        candidate.parentLayout?.ptyIdsByLeafId ?? {}
+      )) {
+        if (candidatePtyId === ptyId) {
+          ownerPaneKeys.add(`${candidate.parentTabId}:${leafId}`)
+        }
+      }
+    }
+    if (!session) {
+      return ownerPaneKeys.size > 0 ? 'ambiguous' : 'exclusive'
+    }
+    for (const [ownerWorktreeId, tabs] of Object.entries(session.tabsByWorktree)) {
+      for (const ownerTab of tabs) {
+        if (ownerWorktreeId === worktreeId && ownerTab.id === parentTabId) {
+          continue
+        }
+        const layout = session.terminalLayoutsByTabId[ownerTab.id]
+        const matchingLeafIds = Object.entries(layout?.ptyIdsByLeafId ?? {}).flatMap(
+          ([leafId, candidatePtyId]) => (candidatePtyId === ptyId ? [leafId] : [])
+        )
+        for (const leafId of matchingLeafIds) {
+          ownerPaneKeys.add(`${ownerTab.id}:${leafId}`)
+        }
+        const primaryMatches =
+          ownerTab.ptyId === ptyId || session.remoteSessionIdsByTabId?.[ownerTab.id] === ptyId
+        if (primaryMatches && matchingLeafIds.length === 0) {
+          const possibleLeafIds = this.collectPersistedTerminalLeafIds(layout)
+          if (possibleLeafIds.length === 1) {
+            ownerPaneKeys.add(`${ownerTab.id}:${possibleLeafIds[0]}`)
+          } else {
+            hasUnidentifiedOwner = true
+          }
+        }
+      }
+    }
+    let ambiguous = hasUnidentifiedOwner
+    for (const paneKey of ownerPaneKeys) {
+      const ownerIncarnationId = session.terminalPtyIncarnationsByPaneKey?.[paneKey]
+      if (!ownerIncarnationId || !incarnationId) {
+        ambiguous = true
+        continue
+      }
+      if (ownerIncarnationId === incarnationId) {
+        return 'shared'
+      }
+    }
+    return ambiguous ? 'ambiguous' : 'exclusive'
+  }
+
+  private removeAgentTeamForPty(ptyId: string): void {
+    const stableHandle = this.handleByPtyId.get(ptyId)
+    if (stableHandle && !this.handles.get(stableHandle)?.closeBinding) {
+      this.claudeAgentTeams.removeTeamForLeaderHandle(stableHandle)
+    }
   }
 
   async moveMobileSessionTab(
@@ -7193,7 +7943,7 @@ export class OrcaRuntimeService {
     const pty = this.getOrCreatePtyWorktreeRecord(ptyId)
     if (pty) {
       if (incarnationId) {
-        pty.incarnationId = incarnationId
+        this.updatePtyIncarnation(pty, incarnationId)
       }
       pty.connected = true
       pty.disconnectedAt = null
@@ -8361,6 +9111,12 @@ export class OrcaRuntimeService {
   }
 
   private advancePtyLifecycleGeneration(ptyId: string): void {
+    for (const [handle, record] of this.handles) {
+      if (record.ptyId === ptyId && record.closeBinding) {
+        this.handles.delete(handle)
+        this.rejectWaitersForHandle(handle, 'terminal_handle_stale')
+      }
+    }
     this.ptyLifecycleGenerationById.set(ptyId, this.nextPtyLifecycleGeneration++)
     // Why: a provider response belongs to the process generation that issued
     // it; a respawn must neither reuse its frame nor join its in-flight call.
@@ -21133,6 +21889,8 @@ export class OrcaRuntimeService {
       })
       const pty = this.getOrCreatePtyWorktreeRecord(result.id)
       if (pty) {
+        pty.incarnationBoundShutdown =
+          (await this.ptyController?.supportsIncarnationBoundShutdown?.(result.id)) ?? null
         if (launchOpts.title) {
           const observedAt = this.nextTitleObservationSequence()
           pty.title = launchOpts.title
@@ -21151,6 +21909,17 @@ export class OrcaRuntimeService {
         pty.launchAgent = launchOpts.launchAgent ?? null
       }
       const handle = pty ? this.issuePtyHandle(pty) : preAllocatedHandle
+      const closeQuarantined = pty
+        ? this.isTerminalSurfaceCloseQuarantined(workspace.id, tabId, leafId, pty.ptyId)
+        : false
+      const terminalCloseHandle =
+        pty && !closeQuarantined
+          ? this.issuePtyIncarnationHandle(pty, {
+              worktreeId: workspace.id,
+              parentTabId: tabId,
+              leafId
+            })
+          : null
       if (pty && launchOpts.deferMobileSessionPublish !== true) {
         this.publishPtyBackedMobileSessionTerminal(workspace.id, pty, {
           tabId,
@@ -21195,6 +21964,11 @@ export class OrcaRuntimeService {
       }
       return {
         handle,
+        ...(terminalCloseHandle
+          ? { terminalCloseHandle }
+          : !closeQuarantined && pty?.incarnationBoundShutdown === false
+            ? { terminalCloseLegacy: true as const }
+            : {}),
         tabId,
         paneKey,
         ptyId: result.id,
@@ -22353,7 +23127,11 @@ export class OrcaRuntimeService {
           try {
             await this.closeMobileSessionTab(`id:${pty.pty.worktreeId}`, tabId)
           } catch (error) {
-            if (!(error instanceof Error) || error.message !== 'workspace_session_unavailable') {
+            if (
+              !(error instanceof Error) ||
+              (error.message !== 'workspace_session_unavailable' &&
+                error.message !== 'tab_not_found')
+            ) {
               throw error
             }
             this.notifier?.closeTerminal(tabId)
@@ -22378,24 +23156,96 @@ export class OrcaRuntimeService {
     return { handle, tabId: leaf.tabId, ptyKilled }
   }
 
-  async closeTerminalTab(handle: string): Promise<RuntimeTerminalClose> {
+  async closeTerminalTab(
+    handle: string,
+    options: { signal?: AbortSignal } = {}
+  ): Promise<RuntimeTerminalClose> {
     const pty = this.getLivePtyForHandle(handle)
     if (pty) {
-      const tabId = pty.pty.tabId
-      if (!tabId) {
-        throw new Error('terminal_tab_not_found')
+      const closeBinding = pty.record.closeBinding
+      if (!closeBinding) {
+        const tabId = pty.pty.tabId
+        if (!tabId) {
+          throw new Error('terminal_tab_not_found')
+        }
+        // Why: ordinary CLI handles retain their existing recovery semantics; paired UI receives a separate incarnation handle.
+        await this.closeMobileSessionTab(`id:${pty.pty.worktreeId}`, tabId, {
+          reason: 'user',
+          ...(options.signal ? { signal: options.signal } : {})
+        })
+        this.claudeAgentTeams.removeTeamForLeaderHandle(handle)
+        return { handle, tabId, closeMode: 'tab', ptyKilled: false }
       }
+      const expected: RuntimeTerminalTabCloseExpectation = {
+        handle,
+        ...closeBinding
+      }
+      this.assertCurrentTerminalTabCloseExpectation(expected)
       // Why: a handle-addressed CLI/automation close is an explicit intent, so
       // it must stay destructive under the non-user close adjudication gate.
-      await this.closeMobileSessionTab(`id:${pty.pty.worktreeId}`, tabId, { reason: 'user' })
+      await this.closeMobileSessionTab(`id:${expected.worktreeId}`, expected.parentTabId, {
+        reason: 'user',
+        expectedTerminalClose: expected,
+        ...(options.signal ? { signal: options.signal } : {})
+      })
       this.claudeAgentTeams.removeTeamForLeaderHandle(handle)
-      return { handle, tabId, closeMode: 'tab', ptyKilled: false }
+      return { handle, tabId: expected.parentTabId, closeMode: 'tab', ptyKilled: false }
     }
     this.assertGraphReady()
     const { leaf } = this.getLiveLeafForHandle(handle)
-    await this.closeMobileSessionTab(`id:${leaf.worktreeId}`, leaf.tabId, { reason: 'user' })
+    await this.closeMobileSessionTab(`id:${leaf.worktreeId}`, leaf.tabId, {
+      reason: 'user',
+      ...(options.signal ? { signal: options.signal } : {})
+    })
     this.claudeAgentTeams.removeTeamForLeaderHandle(handle)
     return { handle, tabId: leaf.tabId, closeMode: 'tab', ptyKilled: false }
+  }
+
+  private assertCurrentTerminalTabCloseExpectation(
+    expected: RuntimeTerminalTabCloseExpectation,
+    options: { requirePublishedSurface?: boolean } = {}
+  ): void {
+    const record = this.handles.get(expected.handle)
+    const pty = this.ptysById.get(expected.ptyId)
+    const pane = parsePaneKey(pty?.paneKey ?? '')
+    const snapshot = this.mobileSessionTabsByWorktree.get(expected.worktreeId)
+    const surface = snapshot?.tabs.find(
+      (tab): tab is RuntimeMobileSessionTerminalTab =>
+        tab.type === 'terminal' &&
+        tab.parentTabId === expected.parentTabId &&
+        tab.leafId === expected.leafId
+    )
+    const publicSurface =
+      snapshot && surface
+        ? this.toMobileSessionTabsResult({ ...snapshot, tabs: [surface] }).tabs[0]
+        : null
+    const closeBinding = record?.closeBinding
+    if (
+      !record ||
+      record.ptyId !== expected.ptyId ||
+      !pty?.connected ||
+      pty.incarnationId !== expected.incarnationId ||
+      pty.worktreeId !== expected.worktreeId ||
+      pty.tabId !== expected.parentTabId ||
+      pane?.tabId !== expected.parentTabId ||
+      pane.leafId !== expected.leafId ||
+      this.getPtyLifecycleGeneration(expected.ptyId) !== expected.lifecycleGeneration ||
+      !closeBinding ||
+      closeBinding.ptyId !== expected.ptyId ||
+      closeBinding.incarnationId !== expected.incarnationId ||
+      closeBinding.worktreeId !== expected.worktreeId ||
+      closeBinding.parentTabId !== expected.parentTabId ||
+      closeBinding.leafId !== expected.leafId ||
+      closeBinding.lifecycleGeneration !== expected.lifecycleGeneration ||
+      record.ptyGeneration !== expected.lifecycleGeneration ||
+      (options.requirePublishedSurface !== false &&
+        (publicSurface?.type !== 'terminal' ||
+          publicSurface.status !== 'ready' ||
+          publicSurface.terminalCloseHandle !== expected.handle))
+    ) {
+      // Why: a replacement may reuse the tab/leaf names; only this handle generation can authorize teardown.
+      throw new Error('terminal_handle_stale')
+    }
   }
 
   async splitTerminal(
@@ -22722,7 +23572,9 @@ export class OrcaRuntimeService {
 
   private async acquireWorktreeTerminalMutation(
     worktreeId: string,
-    deadline?: number
+    deadline?: number,
+    signal?: AbortSignal,
+    timeoutError = 'terminal_worktree_sleep_timeout'
   ): Promise<() => void> {
     const key = runtimeWorktreeIdentityKey(worktreeId)
     const previous = this.terminalMutationTailByWorktreeId.get(key) ?? Promise.resolve()
@@ -22735,7 +23587,11 @@ export class OrcaRuntimeService {
     try {
       await waitForWorktreeTerminalMutation(
         previous.catch(() => {}),
-        deadline
+        {
+          deadline,
+          signal,
+          timeoutError
+        }
       )
     } catch (error) {
       // Why: resolve this abandoned queue node now so it can never acquire later and stop a terminal after the caller timed out.
@@ -24357,6 +25213,7 @@ export class OrcaRuntimeService {
         | 'isWsl'
         | 'wslDistro'
         | 'incarnationId'
+        | 'incarnationBoundShutdown'
       >
     > = {}
   ): RuntimePtyWorktreeRecord {
@@ -24376,6 +25233,7 @@ export class OrcaRuntimeService {
       pty = {
         ptyId,
         incarnationId: state.incarnationId ?? null,
+        incarnationBoundShutdown: state.incarnationBoundShutdown ?? null,
         worktreeId,
         connectionId,
         isWsl: state.isWsl ?? null,
@@ -24425,7 +25283,10 @@ export class OrcaRuntimeService {
 
     pty.worktreeId = worktreeId
     if (state.incarnationId !== undefined) {
-      pty.incarnationId = state.incarnationId
+      this.updatePtyIncarnation(pty, state.incarnationId)
+    }
+    if (state.incarnationBoundShutdown !== undefined) {
+      pty.incarnationBoundShutdown = state.incarnationBoundShutdown
     }
     if (state.connectionId !== undefined) {
       pty.connectionId = state.connectionId
@@ -24470,6 +25331,16 @@ export class OrcaRuntimeService {
     // Why: recordPtyWorktree is the common lifecycle point for every path that resolves a PTY's worktree (renderer restore, controller list).
     advertisedUrlWatcher.bindPty(ptyId, worktreeId)
     return pty
+  }
+
+  private updatePtyIncarnation(
+    pty: RuntimePtyWorktreeRecord,
+    incarnationId: PtyIncarnationId | null
+  ): void {
+    if (pty.incarnationId !== incarnationId) {
+      this.advancePtyLifecycleGeneration(pty.ptyId)
+      pty.incarnationId = incarnationId
+    }
   }
 
   private makeRuntimePaneKey(
@@ -24566,7 +25437,8 @@ export class OrcaRuntimeService {
       if (worktreeId) {
         this.recordPtyWorktree(session.id, worktreeId, {
           connected: true,
-          ...(session.incarnationId ? { incarnationId: session.incarnationId } : {})
+          ...(session.incarnationId ? { incarnationId: session.incarnationId } : {}),
+          incarnationBoundShutdown: session.incarnationBoundShutdown ?? null
         })
       }
       // Why: fire-and-forget so this listing hot path doesn't serialize a relay round-trip per session and a throw can't abort the sweep below.
@@ -25436,16 +26308,29 @@ export class OrcaRuntimeService {
             }
           : null
       // Why: web/mobile clients hold handles across renderer graph syncs; leaf handles are epoch-bound but PTY handles stay streamable.
-      const terminalHandle = liveLeafPtyId
-        ? this.issuePtyHandle(
-            this.recordPtyWorktree(liveLeafPtyId, snapshot.worktree, {
-              tabId: tab.parentTabId,
-              paneKey,
-              connected: true
-            })
-          )
+      const terminalPty = liveLeafPtyId
+        ? this.recordPtyWorktree(liveLeafPtyId, snapshot.worktree, {
+            tabId: tab.parentTabId,
+            paneKey,
+            connected: true
+          })
         : livePty
-          ? this.issuePtyHandle(livePty)
+      const terminalHandle = terminalPty ? this.issuePtyHandle(terminalPty) : null
+      const closeQuarantined = terminalPty
+        ? this.isTerminalSurfaceCloseQuarantined(
+            snapshot.worktree,
+            tab.parentTabId,
+            tab.leafId,
+            terminalPty.ptyId
+          )
+        : false
+      const terminalCloseHandle =
+        terminalPty && !closeQuarantined
+          ? this.issuePtyIncarnationHandle(terminalPty, {
+              worktreeId: snapshot.worktree,
+              parentTabId: tab.parentTabId,
+              leafId: tab.leafId
+            })
           : null
       tabs.push({
         type: 'terminal',
@@ -25470,7 +26355,15 @@ export class OrcaRuntimeService {
         ...(tab.viewMode ? { viewMode: tab.viewMode } : {}),
         isActive: tab.isActive,
         ...(terminalHandle
-          ? { status: 'ready' as const, terminal: terminalHandle }
+          ? {
+              status: 'ready' as const,
+              terminal: terminalHandle,
+              ...(terminalCloseHandle
+                ? { terminalCloseHandle }
+                : !closeQuarantined && terminalPty?.incarnationBoundShutdown === false
+                  ? { terminalCloseLegacy: true as const }
+                  : {})
+            }
           : { status: 'pending-handle' as const, terminal: null })
       })
     }
@@ -25504,6 +26397,7 @@ export class OrcaRuntimeService {
       worktree: snapshot.worktree,
       publicationEpoch: snapshot.publicationEpoch,
       snapshotVersion: snapshot.snapshotVersion,
+      terminalCloseAuthority: 'generation-bound',
       activeGroupId,
       activeTabId: active?.id ?? null,
       activeTabType: active?.type ?? null,
@@ -26217,8 +27111,10 @@ export class OrcaRuntimeService {
     if (!pty || pty.ptyId !== record.ptyId) {
       return null
     }
-    // Why: renderer adoption can race with CLI reads; keep ptyId → handle populated so summaries don't mint a second handle for the same terminal.
-    this.handleByPtyId.set(record.ptyId, handle)
+    if (!record.closeBinding) {
+      // Why: close-only incarnation handles must not replace the stable stream/CLI identity.
+      this.handleByPtyId.set(record.ptyId, handle)
+    }
     return { record, pty }
   }
 
@@ -26311,8 +27207,16 @@ export class OrcaRuntimeService {
   }
 
   private issuePtyHandle(pty: RuntimePtyWorktreeRecord): string {
+    const mappedHandle = this.handleByPtyId.get(pty.ptyId)
+    const mappedRecord = mappedHandle ? this.handles.get(mappedHandle) : undefined
     const existingHandle =
-      this.handleByPtyId.get(pty.ptyId) ?? this.findHandleForPtyRecord(pty.ptyId)
+      mappedHandle &&
+      (!mappedRecord ||
+        (mappedRecord.runtimeId === this.runtimeId &&
+          mappedRecord.ptyId === pty.ptyId &&
+          !mappedRecord.closeBinding))
+        ? mappedHandle
+        : this.findHandleForPtyRecord(pty.ptyId)
     if (existingHandle) {
       const existingRecord = this.handles.get(existingHandle)
       if (
@@ -26341,11 +27245,65 @@ export class OrcaRuntimeService {
     return handle
   }
 
+  private issuePtyIncarnationHandle(
+    pty: RuntimePtyWorktreeRecord,
+    binding: Pick<RuntimeTerminalParentBinding, 'worktreeId' | 'parentTabId' | 'leafId'>
+  ): string | null {
+    if (!pty.incarnationId || pty.incarnationBoundShutdown !== true) {
+      return null
+    }
+    const ptyGeneration = this.getPtyLifecycleGeneration(pty.ptyId)
+    const closeBinding: RuntimeTerminalParentBinding = {
+      ...binding,
+      ptyId: pty.ptyId,
+      incarnationId: pty.incarnationId,
+      lifecycleGeneration: ptyGeneration
+    }
+    const existingHandle = this.findHandleForPtyIncarnation(closeBinding)
+    if (existingHandle) {
+      return existingHandle
+    }
+    const handle = `term_${randomUUID()}`
+    const syntheticId = `pty:${pty.ptyId}`
+    this.handles.set(handle, {
+      handle,
+      runtimeId: this.runtimeId,
+      rendererGraphEpoch: this.rendererGraphEpoch,
+      worktreeId: pty.worktreeId,
+      tabId: syntheticId,
+      leafId: syntheticId,
+      ptyId: pty.ptyId,
+      ptyGeneration,
+      closeBinding
+    })
+    return handle
+  }
+
+  private findHandleForPtyIncarnation(binding: RuntimeTerminalParentBinding): string | null {
+    for (const [handle, record] of this.handles) {
+      if (
+        record.runtimeId === this.runtimeId &&
+        record.ptyId === binding.ptyId &&
+        record.ptyGeneration === binding.lifecycleGeneration &&
+        record.closeBinding?.worktreeId === binding.worktreeId &&
+        record.closeBinding.incarnationId === binding.incarnationId &&
+        record.closeBinding.parentTabId === binding.parentTabId &&
+        record.closeBinding.leafId === binding.leafId &&
+        record.closeBinding.lifecycleGeneration === binding.lifecycleGeneration &&
+        record.tabId.startsWith('pty:')
+      ) {
+        return handle
+      }
+    }
+    return null
+  }
+
   private findHandleForPtyRecord(ptyId: string): string | null {
     for (const [handle, record] of this.handles) {
       if (
         record.runtimeId === this.runtimeId &&
         record.ptyId === ptyId &&
+        record.ptyGeneration === 0 &&
         record.tabId.startsWith('pty:')
       ) {
         return handle
@@ -29667,30 +30625,40 @@ const WORKTREE_TERMINAL_SLEEP_TIMEOUT_MS = 12_000
 
 async function waitForWorktreeTerminalMutation(
   previous: Promise<void>,
-  deadline?: number
+  options: { deadline?: number; signal?: AbortSignal; timeoutError: string }
 ): Promise<void> {
-  if (deadline === undefined) {
+  if (options.signal?.aborted) {
+    throw new Error('client_disconnected')
+  }
+  if (options.deadline === undefined && !options.signal) {
     await previous
     return
   }
-  const remainingMs = deadline - Date.now()
-  if (remainingMs <= 0) {
-    throw new Error('terminal_worktree_sleep_timeout')
+  const remainingMs = options.deadline === undefined ? null : options.deadline - Date.now()
+  if (remainingMs !== null && remainingMs <= 0) {
+    throw new Error(options.timeoutError)
   }
   let timeout: ReturnType<typeof setTimeout> | undefined
+  let abort: (() => void) | undefined
   try {
     await Promise.race([
       previous,
       new Promise<never>((_, reject) => {
-        timeout = setTimeout(
-          () => reject(new Error('terminal_worktree_sleep_timeout')),
-          remainingMs
-        )
+        if (remainingMs !== null) {
+          timeout = setTimeout(() => reject(new Error(options.timeoutError)), remainingMs)
+        }
+        if (options.signal) {
+          abort = () => reject(new Error('client_disconnected'))
+          options.signal.addEventListener('abort', abort, { once: true })
+        }
       })
     ])
   } finally {
     if (timeout !== undefined) {
       clearTimeout(timeout)
+    }
+    if (abort) {
+      options.signal?.removeEventListener('abort', abort)
     }
   }
 }

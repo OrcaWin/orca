@@ -4294,6 +4294,62 @@ describe('registerPtyHandlers', () => {
         vi.useRealTimers()
       })
 
+      it('does not issue shutdown when the client disconnects during provider startup', async () => {
+        const startup = makeDeferred()
+        const shutdown = vi.fn(async () => undefined)
+        setLocalPtyProvider({
+          spawn: vi.fn(),
+          write: vi.fn(),
+          resize: vi.fn(),
+          shutdown,
+          sendSignal: vi.fn(),
+          getCwd: vi.fn(),
+          getInitialCwd: vi.fn(),
+          clearBuffer: vi.fn(),
+          acknowledgeDataEvent: vi.fn(),
+          hasChildProcesses: vi.fn(),
+          getForegroundProcess: vi.fn(),
+          serialize: vi.fn(),
+          revive: vi.fn(),
+          onData: vi.fn(() => () => {}),
+          onReplay: vi.fn(() => () => {}),
+          onExit: vi.fn(() => () => {}),
+          listProcesses: vi.fn(async () => []),
+          attach: vi.fn(),
+          getDefaultShell: vi.fn(),
+          getProfiles: vi.fn()
+        } as never)
+        const runtime = { setPtyController: vi.fn(), onPtyExit: vi.fn() }
+        handlers.clear()
+        registerPtyHandlers(
+          mainWindow as never,
+          runtime as never,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { awaitLocalPtyProviderStartup: () => startup.promise }
+        )
+        const controller = runtime.setPtyController.mock.calls[0]?.[0] as {
+          stopAndWait: (
+            ptyId: string,
+            opts: { signal: AbortSignal; deadlineMs: number; expectedIncarnationId: string }
+          ) => Promise<boolean>
+        }
+        const abort = new AbortController()
+
+        const stopped = controller.stopAndWait('restored-pty', {
+          signal: abort.signal,
+          deadlineMs: Date.now() + 10_000,
+          expectedIncarnationId: 'restored-incarnation'
+        })
+        abort.abort()
+        startup.resolve()
+
+        await expect(stopped).resolves.toBe(false)
+        expect(shutdown).not.toHaveBeenCalled()
+      })
+
       it('runtime controller stopAndWait fails when keepHistory allows the PTY to revive', async () => {
         vi.useFakeTimers()
         const shutdown = vi.fn(async () => undefined)
@@ -4441,6 +4497,50 @@ describe('registerPtyHandlers', () => {
         await expect(controller.stopAndWait('local-incarnated')).resolves.toBe(true)
 
         expect(runtime.onPtyExit).toHaveBeenCalledWith('local-incarnated', -1, 'incarnation-live')
+      })
+
+      it('lets provider CAS adjudicate a restored PTY when the controller cache is empty', async () => {
+        const shutdown = vi.fn(async () => undefined)
+        const runtime = { setPtyController: vi.fn(), onPtyExit: vi.fn() }
+        setLocalPtyProvider({
+          spawn: vi.fn(),
+          write: vi.fn(),
+          resize: vi.fn(),
+          shutdown,
+          sendSignal: vi.fn(),
+          getCwd: vi.fn(),
+          getInitialCwd: vi.fn(),
+          clearBuffer: vi.fn(),
+          acknowledgeDataEvent: vi.fn(),
+          hasChildProcesses: vi.fn(),
+          getForegroundProcess: vi.fn(),
+          serialize: vi.fn(),
+          revive: vi.fn(),
+          onData: vi.fn(() => () => {}),
+          onReplay: vi.fn(() => () => {}),
+          onExit: vi.fn(() => () => {}),
+          listProcesses: vi.fn(async () => []),
+          attach: vi.fn(),
+          getDefaultShell: vi.fn(),
+          getProfiles: vi.fn()
+        } as never)
+        handlers.clear()
+        registerPtyHandlers(mainWindow as never, runtime as never)
+        const controller = runtime.setPtyController.mock.calls[0]?.[0] as {
+          stopAndWait: (ptyId: string, opts: { expectedIncarnationId: string }) => Promise<boolean>
+        }
+
+        await expect(
+          controller.stopAndWait('restored-pty', {
+            expectedIncarnationId: 'restored-incarnation'
+          })
+        ).resolves.toBe(true)
+
+        expect(shutdown).toHaveBeenCalledWith('restored-pty', {
+          immediate: true,
+          keepHistory: false,
+          expectedIncarnationId: 'restored-incarnation'
+        })
       })
 
       it('runtime controller kill routes app-scoped SSH ids through the parsed provider when ownership is absent', async () => {

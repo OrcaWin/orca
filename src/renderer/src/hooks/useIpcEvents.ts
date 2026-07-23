@@ -136,6 +136,11 @@ import { getRuntimeEnvironmentIdForWorktree } from '@/lib/worktree-runtime-owner
 import { resolveAgentPaneAuthorityKey } from '@/store/slices/agent-pane-authority'
 import { translate } from '@/i18n/i18n'
 import { closeTerminalTab } from '@/components/terminal/terminal-tab-actions'
+import { closeLocalTerminalTabState } from '@/components/terminal/close-local-terminal-tab-state'
+import {
+  buildTerminalTabRetirementPlan,
+  collectCurrentTerminalPtyIdsForTab
+} from '@/store/slices/terminal-tab-retirement'
 import { initialAgentTabViewModeProps } from '@/lib/native-chat-initial-view-mode'
 import { getConnectionIdFromState } from '@/lib/connection-context'
 import { isNativeChatTranscriptLocalReadable } from '@/lib/native-chat-transcript-readability'
@@ -2039,6 +2044,60 @@ export function useIpcEvents(): void {
                 respond(error instanceof Error ? error.message : 'terminal_tab_close_failed')
               })
             }
+          })
+        })
+      )
+    }
+
+    const onTerminalTabCloseValidationRequest = window.api.ui.onTerminalTabCloseValidationRequest
+    const respondTerminalTabCloseValidation = window.api.ui.respondTerminalTabCloseValidation
+    if (onTerminalTabCloseValidationRequest && respondTerminalTabCloseValidation) {
+      unsubs.push(
+        onTerminalTabCloseValidationRequest(({ requestId, tabId, expectedPtyIds }) => {
+          const respond = (error?: string): void =>
+            respondTerminalTabCloseValidation({ requestId, ...(error ? { error } : {}) })
+          const state = useAppStore.getState()
+          const retirementPlan = buildTerminalTabRetirementPlan(state, tabId)
+          const currentPtyIds = new Set(collectCurrentTerminalPtyIdsForTab(state, tabId))
+          if (!retirementPlan.worktreeId) {
+            respond('terminal_tab_not_found')
+            return
+          }
+          if (
+            currentPtyIds.size !== expectedPtyIds.length ||
+            expectedPtyIds.some((ptyId) => !currentPtyIds.has(ptyId))
+          ) {
+            respond('terminal_handle_stale')
+            return
+          }
+          if (isPinnedSessionTab(state, retirementPlan.worktreeId, tabId)) {
+            respond('terminal_tab_pinned')
+            return
+          }
+          respond()
+        })
+      )
+    }
+    if (window.api.ui.onTerminalTabCloseFinalization) {
+      unsubs.push(
+        window.api.ui.onTerminalTabCloseFinalization(({ tabId, expectedPtyIds }) => {
+          const state = useAppStore.getState()
+          const retirementPlan = buildTerminalTabRetirementPlan(state, tabId)
+          if (!retirementPlan.worktreeId) {
+            return
+          }
+          const expected = new Set(expectedPtyIds)
+          const currentPtyIds = collectCurrentTerminalPtyIdsForTab(state, tabId)
+          // Why: a concurrent replacement generation must survive finalization of the older close.
+          if (currentPtyIds.some((ptyId) => !expected.has(ptyId))) {
+            return
+          }
+          closeLocalTerminalTabState(tabId, {
+            reason: 'cleanup',
+            captureRecentlyClosed: false,
+            remoteCloseOwnedByHost: true,
+            localPtyTeardownOwnedExternally: true,
+            precomputedRetirementPlan: retirementPlan
           })
         })
       )

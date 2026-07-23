@@ -5,7 +5,8 @@ import type { PtyBackgroundStreamEvent, PtySpawnOptions, PtySpawnResult } from '
 import {
   AGENT_SESSION_CLAIM_DAEMON_PROTOCOL_VERSION,
   AGENT_SESSION_CREATE_OPERATION_DAEMON_PROTOCOL_VERSION,
-  GIT_CREDENTIAL_GUARD_HOST_PROTOCOL_VERSION
+  GIT_CREDENTIAL_GUARD_HOST_PROTOCOL_VERSION,
+  INCARNATION_BOUND_SHUTDOWN_DAEMON_PROTOCOL_VERSION
 } from './types'
 
 type AdapterMock = DaemonPtyAdapter & {
@@ -44,6 +45,8 @@ function createAdapter(
       protocolVersion >= AGENT_SESSION_CLAIM_DAEMON_PROTOCOL_VERSION,
     supportsAgentSessionCreateOperations: () =>
       protocolVersion >= AGENT_SESSION_CREATE_OPERATION_DAEMON_PROTOCOL_VERSION,
+    supportsIncarnationBoundShutdown: () =>
+      protocolVersion >= INCARNATION_BOUND_SHUTDOWN_DAEMON_PROTOCOL_VERSION,
     providesAgentSessionOwnerListings: () =>
       protocolVersion >= AGENT_SESSION_CLAIM_DAEMON_PROTOCOL_VERSION,
     canProvideAuthoritativeBufferSnapshot: () => protocolVersion >= 20,
@@ -183,6 +186,28 @@ describe('DaemonPtyRouter', () => {
     expect(router.providesAgentSessionOwnerListings('legacy-session')).toBe(true)
     expect(router.providesAgentSessionOwnerListings(created.id)).toBe(true)
     expect(router.providesAgentSessionOwnerListings('unknown-session')).toBe(false)
+  })
+
+  it('reports exact shutdown capability for the adapter that owns each session', async () => {
+    const current = createAdapter(
+      'current',
+      [],
+      undefined,
+      INCARNATION_BOUND_SHUTDOWN_DAEMON_PROTOCOL_VERSION
+    )
+    const legacy = createAdapter(
+      'legacy',
+      ['legacy-session'],
+      undefined,
+      INCARNATION_BOUND_SHUTDOWN_DAEMON_PROTOCOL_VERSION - 1
+    )
+    const router = new DaemonPtyRouter({ current, legacy: [legacy] })
+    await router.discoverLegacySessions()
+    const created = await router.spawn({ cols: 80, rows: 24 })
+
+    expect(router.supportsIncarnationBoundShutdown({ ptyId: created.id })).toBe(true)
+    expect(router.supportsIncarnationBoundShutdown({ ptyId: 'legacy-session' })).toBe(false)
+    expect(router.supportsIncarnationBoundShutdown({ ptyId: 'unknown-session' })).toBeNull()
   })
 
   it('does not publish a route when the adapter proves exit before reply', async () => {

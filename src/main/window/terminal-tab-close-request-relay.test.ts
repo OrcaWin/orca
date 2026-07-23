@@ -68,4 +68,83 @@ describe('requestTerminalTabCloseFromRenderer', () => {
 
     await expect(pending).rejects.toThrow('terminal_tab_pinned')
   })
+
+  it('validates exact bindings through a separate read-only channel', async () => {
+    const { requestTerminalTabCloseValidationFromRenderer } =
+      await import('./terminal-tab-close-request-relay')
+    const webContents = { isDestroyed: () => false, send: vi.fn() }
+    const otherWebContents = {}
+    const pending = requestTerminalTabCloseValidationFromRenderer(
+      { isDestroyed: () => false, webContents } as never,
+      'tab-1',
+      ['pty-left', 'pty-right']
+    )
+    const request = webContents.send.mock.calls[0]?.[1] as { requestId: string }
+
+    expect(webContents.send).toHaveBeenCalledWith('ui:terminalTabCloseValidationRequest', {
+      requestId: request.requestId,
+      tabId: 'tab-1',
+      expectedPtyIds: ['pty-left', 'pty-right']
+    })
+    ipcEmitter.emit(
+      'ui:terminalTabCloseValidationResponse',
+      { sender: otherWebContents },
+      { requestId: request.requestId }
+    )
+    let settled = false
+    void pending.finally(() => {
+      settled = true
+    })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    ipcEmitter.emit(
+      'ui:terminalTabCloseValidationResponse',
+      { sender: webContents },
+      { requestId: request.requestId }
+    )
+    await expect(pending).resolves.toBeUndefined()
+    expect(webContents.send).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects when read-only validation exceeds its deadline', async () => {
+    vi.useFakeTimers()
+    try {
+      const { requestTerminalTabCloseValidationFromRenderer } =
+        await import('./terminal-tab-close-request-relay')
+      const webContents = { isDestroyed: () => false, send: vi.fn() }
+      const pending = requestTerminalTabCloseValidationFromRenderer(
+        { isDestroyed: () => false, webContents } as never,
+        'tab-timeout',
+        ['pty-1']
+      )
+      const rejected = expect(pending).rejects.toThrow('terminal_tab_close_timeout')
+
+      await vi.advanceTimersByTimeAsync(20_000)
+
+      await rejected
+      expect(webContents.send).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('rejects immediately when validation cannot be delivered', async () => {
+    const { requestTerminalTabCloseValidationFromRenderer } =
+      await import('./terminal-tab-close-request-relay')
+    const webContents = {
+      isDestroyed: () => false,
+      send: vi.fn(() => {
+        throw new Error('destroyed')
+      })
+    }
+
+    await expect(
+      requestTerminalTabCloseValidationFromRenderer(
+        { isDestroyed: () => false, webContents } as never,
+        'tab-timeout',
+        ['pty-1']
+      )
+    ).rejects.toThrow('renderer_unavailable')
+  })
 })

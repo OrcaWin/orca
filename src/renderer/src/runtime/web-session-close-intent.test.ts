@@ -26,7 +26,7 @@ describe('web session close intent', () => {
 
   it('expires a never-confirmed close', () => {
     recordWebSessionCloseIntent(OWNER, WT, 'host-tab-1', 1000)
-    expect(isWebSessionCloseIntentPending(OWNER, WT, 'host-tab-1', 12_000)).toBe(false)
+    expect(isWebSessionCloseIntentPending(OWNER, WT, 'host-tab-1', 66_001)).toBe(false)
   })
 
   it('scopes intents by owner, pairing revision, and worktree', () => {

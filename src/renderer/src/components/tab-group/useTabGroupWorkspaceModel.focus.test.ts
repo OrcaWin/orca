@@ -24,6 +24,9 @@ const mocks = vi.hoisted(() => ({
   openFile: vi.fn(),
   pinFile: vi.fn(),
   recordFeatureInteraction: vi.fn(),
+  resolveHostTerminalCloseAuthorityForWebSessionTab: vi.fn<
+    () => { kind: 'generation-bound'; handle: string } | { kind: 'legacy-tab-id' } | null
+  >(() => null),
   setActiveBrowserTab: vi.fn(),
   setActiveFile: vi.fn(),
   setActiveTab: vi.fn(),
@@ -75,6 +78,14 @@ vi.mock('../../runtime/web-runtime-session', () => ({
   createWebRuntimeSessionTerminal: mocks.createWebRuntimeSessionTerminal,
   isWebRuntimeSessionActive: mocks.isWebRuntimeSessionActive,
   toHostSessionTabId: (tabId: string) => tabId
+}))
+
+vi.mock('../../runtime/web-session-tabs-sync', () => ({
+  getLatestWebSessionTabsPublicationEpoch: vi.fn(() => null),
+  queueProvisionalHostTerminalClose: vi.fn(() => false),
+  resolveHostSessionTabIdForWebSessionTab: vi.fn(() => null),
+  resolveHostTerminalCloseAuthorityForWebSessionTab:
+    mocks.resolveHostTerminalCloseAuthorityForWebSessionTab
 }))
 
 vi.mock('../../store/slices/browser-webview-cleanup', () => ({
@@ -169,6 +180,7 @@ describe('useTabGroupWorkspaceModel terminal activation focus', () => {
       status: 'failed',
       message: 'The workspace is not connected to a remote Orca host.'
     })
+    mocks.resolveHostTerminalCloseAuthorityForWebSessionTab.mockReturnValue(null)
     resetStore()
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
       callback(0)
@@ -301,6 +313,9 @@ describe('useTabGroupWorkspaceModel terminal activation focus', () => {
       }
     }
     mocks.isWebRuntimeSessionActive.mockReturnValue(true)
+    mocks.resolveHostTerminalCloseAuthorityForWebSessionTab.mockReturnValue({
+      kind: 'legacy-tab-id'
+    })
     const { useTabGroupWorkspaceModel } = await import('./useTabGroupWorkspaceModel')
     const model = useTabGroupWorkspaceModel({ groupId: 'group-1', worktreeId: 'wt-1' })
 

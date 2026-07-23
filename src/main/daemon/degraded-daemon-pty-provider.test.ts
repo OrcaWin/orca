@@ -124,6 +124,22 @@ describe('DegradedDaemonPtyProvider', () => {
     expect(provider.providesAgentSessionOwnerListings('unknown-session')).toBe(false)
   })
 
+  it('delegates exact-shutdown authority only to the provider that owns the id', async () => {
+    const current = createDaemonAdapter('daemon', ['daemon-session'])
+    const legacy = createDaemonAdapter('legacy', ['legacy-session'])
+    const fallback = createProvider('fallback')
+    current.supportsIncarnationBoundShutdown = vi.fn(() => true)
+    legacy.supportsIncarnationBoundShutdown = vi.fn(() => false)
+    fallback.supportsIncarnationBoundShutdown = vi.fn(() => true)
+    const provider = new DegradedDaemonPtyProvider({ current, legacy: [legacy], fallback })
+    await provider.discoverDaemonSessions()
+
+    expect(provider.supportsIncarnationBoundShutdown()).toBe(true)
+    expect(provider.supportsIncarnationBoundShutdown({ ptyId: 'daemon-session' })).toBe(true)
+    expect(provider.supportsIncarnationBoundShutdown({ ptyId: 'legacy-session' })).toBe(false)
+    expect(provider.supportsIncarnationBoundShutdown({ ptyId: 'unknown-session' })).toBeNull()
+  })
+
   it('routes fresh foreground confirmation to the session owner', async () => {
     const current = createDaemonAdapter('daemon', ['daemon-session'])
     const fallback = createProvider('fallback')

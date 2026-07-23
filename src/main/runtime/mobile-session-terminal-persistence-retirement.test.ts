@@ -208,7 +208,7 @@ describe('mobile session terminal persistence retirement', () => {
     expect(result.terminalTopologyRevisionByRepoId?.[REPO_ID]).toBe(1)
   })
 
-  it('does not treat a sibling parent PTY as the exact leaf when layout is unavailable', () => {
+  it('does not fence an unbound absent leaf when layout is unavailable', () => {
     const session = {
       ...getDefaultWorkspaceSession(),
       tabsByWorktree: {
@@ -235,7 +235,28 @@ describe('mobile session terminal persistence retirement', () => {
       incarnationId: 'incarnation-left'
     })
 
+    expect(result).toBe(session)
     expect(result.tabsByWorktree[WORKTREE_ID]).toEqual(session.tabsByWorktree[WORKTREE_ID])
+    expect(result.terminalSurfaceTombstonesByPaneKey).toBeUndefined()
+    expect(result.terminalTopologyRevisionByRepoId).toBeUndefined()
+  })
+
+  it('fences an unpersisted surface only when the host proves its absence', () => {
+    const session = getDefaultWorkspaceSession()
+
+    const result = retireTerminalSurfaceFromPersistence(
+      session,
+      {
+        worktreeId: WORKTREE_ID,
+        parentTabId: 'terminal',
+        leafId: 'left',
+        ptyId: 'pty-left',
+        incarnationId: 'incarnation-left'
+      },
+      { recordAuthoritativelyAbsentSurface: true }
+    )
+
+    expect(result).not.toBe(session)
     expect(result.terminalSurfaceTombstonesByPaneKey).toEqual({})
     expect(result.terminalTopologyRevisionByRepoId?.[REPO_ID]).toBe(1)
   })
@@ -318,6 +339,7 @@ describe('mobile session terminal persistence retirement', () => {
 
   it('keeps retirement state proportional to repos across many worktrees and closed panes', () => {
     let session = getDefaultWorkspaceSession()
+    const initialSession = session
     for (let index = 0; index < 1_000; index += 1) {
       session = retireTerminalSurfaceFromPersistence(session, {
         worktreeId: `${REPO_ID}::/worktree-${index}`,
@@ -328,8 +350,8 @@ describe('mobile session terminal persistence retirement', () => {
       })
     }
 
-    expect(session.terminalSurfaceTombstonesByPaneKey).toEqual({})
-    expect(Object.keys(session.terminalTopologyRevisionByRepoId ?? {})).toEqual([REPO_ID])
-    expect(session.terminalTopologyRevisionByRepoId?.[REPO_ID]).toBe(1_000)
+    expect(session).toBe(initialSession)
+    expect(session.terminalSurfaceTombstonesByPaneKey).toBeUndefined()
+    expect(session.terminalTopologyRevisionByRepoId).toBeUndefined()
   })
 })

@@ -23,11 +23,15 @@ import {
 import { buildSshPtySpawnRequest } from './ssh-pty-spawn-request'
 import { SshPtySpawnExitRaceTracker } from './ssh-pty-spawn-exit-race'
 import { SshAgentSessionCapabilities } from './ssh-agent-session-capabilities'
-
-// Why: sequential relay teardown calls share one absolute budget; convert to the mux-relative timeout only at dispatch.
-function relayTimeoutOptions(deadlineMs: number | undefined): { timeoutMs: number } | undefined {
-  return deadlineMs === undefined ? undefined : { timeoutMs: Math.max(1, deadlineMs - Date.now()) }
-}
+import type {
+  PtyProviderProbeOptions,
+  PtyShutdownOptions
+} from '../../shared/pty-shutdown-authority'
+import {
+  requestSshPtyShutdown,
+  SshPtyShutdownCapability,
+  sshPtyRelayTimeoutOptions
+} from './ssh-pty-shutdown-capability'
 
 /** Remote PTY provider that proxies IPtyProvider operations through the relay. */
 export class SshPtyProvider implements IPtyProvider {
@@ -42,6 +46,7 @@ export class SshPtyProvider implements IPtyProvider {
   readonly getAppliedSize: NonNullable<IPtyProvider['getAppliedSize']>
   private readonly agentSessionCapabilities: SshAgentSessionCapabilities
   private spawnExitRaces = new SshPtySpawnExitRaceTracker()
+  private readonly shutdownCapability: SshPtyShutdownCapability
 
   constructor(
     connectionId: string,
@@ -51,6 +56,7 @@ export class SshPtyProvider implements IPtyProvider {
     this.connectionId = connectionId
     this.mux = mux
     this.agentSessionCapabilities = new SshAgentSessionCapabilities(mux)
+    this.shutdownCapability = new SshPtyShutdownCapability(mux)
     this.getAppliedSize = createSshPtyAppliedSizeReader(mux, connectionId)
 
     this.unsubscribeNotifications = subscribeSshPtyNotifications({
@@ -196,6 +202,12 @@ export class SshPtyProvider implements IPtyProvider {
     return await this.agentSessionCapabilities.supportsCreateOperations(options)
   }
 
+  async supportsIncarnationBoundShutdown(
+    options: PtyProviderProbeOptions = {}
+  ): Promise<boolean | null> {
+    return await this.shutdownCapability.supports(options)
+  }
+
   async attach(id: string): Promise<void> {
     await this.mux.request('pty.attach', { id: this.toRelayPtyId(id) })
   }
@@ -226,19 +238,13 @@ export class SshPtyProvider implements IPtyProvider {
     this.mux.notify('pty.resize', { id: this.toRelayPtyId(id), cols, rows })
   }
 
-  async shutdown(
-    id: string,
-    opts: { immediate?: boolean; keepHistory?: boolean; deadlineMs?: number }
-  ): Promise<void> {
-    await this.mux.request(
-      'pty.shutdown',
-      {
-        id: this.toRelayPtyId(id),
-        immediate: opts.immediate ?? false,
-        keepHistory: opts.keepHistory ?? false
-      },
-      relayTimeoutOptions(opts.deadlineMs)
-    )
+  async shutdown(id: string, opts: PtyShutdownOptions): Promise<void> {
+    await requestSshPtyShutdown({
+      mux: this.mux,
+      relayPtyId: this.toRelayPtyId(id),
+      options: opts,
+      capability: this.shutdownCapability
+    })
     this.livePtyIds.delete(id)
   }
 
@@ -296,7 +302,7 @@ export class SshPtyProvider implements IPtyProvider {
     const result = await this.mux.request(
       'pty.listProcesses',
       undefined,
-      relayTimeoutOptions(opts?.deadlineMs)
+      sshPtyRelayTimeoutOptions(opts?.deadlineMs)
     )
     const processes = mapSshPtyProcessList(result as PtyProcessInfo[], (id) => this.toAppPtyId(id))
     for (const process of processes) {

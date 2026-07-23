@@ -4,6 +4,8 @@ type WebAgentSessionHandoff = {
   provisionalTabId: string
   hostTabId: string
   hostTerminalHandle: string
+  hostTerminalCloseHandle?: string
+  pairingRevision?: number
 }
 
 type WebAgentSessionHandoffKey = Pick<
@@ -14,6 +16,8 @@ type WebAgentSessionHandoffKey = Pick<
 type WebAgentSessionHandoffState = {
   hostTabId: string
   hostTerminalHandle: string
+  hostTerminalCloseHandle: string | null
+  pairingRevision: number | undefined
   postCreateSnapshotConfirmed: boolean
 }
 
@@ -36,12 +40,29 @@ export function recordWebAgentSessionHandoff(args: WebAgentSessionHandoff): void
   handoffByProvisionalTab.set(handoffKey(args), {
     hostTabId: args.hostTabId,
     hostTerminalHandle: args.hostTerminalHandle,
+    hostTerminalCloseHandle: args.hostTerminalCloseHandle?.trim() || null,
+    pairingRevision: args.pairingRevision,
     postCreateSnapshotConfirmed: false
   })
 }
 
 export function resolveWebAgentSessionHandoff(args: WebAgentSessionHandoffKey): string | null {
   return handoffByProvisionalTab.get(handoffKey(args))?.hostTabId ?? null
+}
+
+export function resolveWebAgentSessionHandoffAuthority(
+  args: WebAgentSessionHandoffKey
+): Omit<WebAgentSessionHandoffState, 'postCreateSnapshotConfirmed'> | null {
+  const handoff = handoffByProvisionalTab.get(handoffKey(args))
+  if (!handoff) {
+    return null
+  }
+  return {
+    hostTabId: handoff.hostTabId,
+    hostTerminalHandle: handoff.hostTerminalHandle,
+    hostTerminalCloseHandle: handoff.hostTerminalCloseHandle,
+    pairingRevision: handoff.pairingRevision
+  }
 }
 
 export function isWebAgentSessionHandoffPostCreateSnapshotConfirmed(

@@ -249,13 +249,24 @@ describe('splitWorkspaceSessionByHost', () => {
     const state: WorkspaceSessionState = {
       ...getDefaultWorkspaceSession(),
       tabsByWorktree: { 'a-wt': [makeTab('tab-a', 'a-wt')] },
-      terminalTopologyRevisionByRepoId: { 'a-repo': 7 }
+      terminalTopologyRevisionByRepoId: { 'a-repo': 7 },
+      terminalExplicitCloseOperationsById: {
+        close: {
+          id: 'close',
+          worktreeId: 'a-wt',
+          parentTabId: 'tab-a',
+          startedAt: 1,
+          surfaces: [{ leafId: 'leaf-a', ptyId: 'pty-a' }]
+        }
+      }
     }
 
     const slices = splitWorkspaceSessionByHost(state, ownerByPrefix())
 
     expect(slices[LOCAL_EXECUTION_HOST_ID]?.terminalTopologyRevisionByRepoId).toBeUndefined()
     expect(slices[RUNTIME_A]?.terminalTopologyRevisionByRepoId).toBeUndefined()
+    expect(slices[LOCAL_EXECUTION_HOST_ID]?.terminalExplicitCloseOperationsById).toBeUndefined()
+    expect(slices[RUNTIME_A]?.terminalExplicitCloseOperationsById).toBeUndefined()
   })
 })
 
@@ -299,15 +310,34 @@ describe('mergeWorkspaceSessionsFromHosts', () => {
     const merged = mergeWorkspaceSessionsFromHosts({
       [LOCAL_EXECUTION_HOST_ID]: {
         ...getDefaultWorkspaceSession(),
-        terminalTopologyRevisionByRepoId: { duplicate: 3 }
+        terminalTopologyRevisionByRepoId: { duplicate: 3 },
+        terminalExplicitCloseOperationsById: {
+          local: {
+            id: 'local',
+            worktreeId: 'local-wt',
+            parentTabId: 'local-tab',
+            startedAt: 1,
+            surfaces: [{ leafId: 'local-leaf', ptyId: 'local-pty' }]
+          }
+        }
       },
       [RUNTIME_A]: {
         ...getDefaultWorkspaceSession(),
-        terminalTopologyRevisionByRepoId: { duplicate: 9 }
+        terminalTopologyRevisionByRepoId: { duplicate: 9 },
+        terminalExplicitCloseOperationsById: {
+          remote: {
+            id: 'remote',
+            worktreeId: 'a-wt',
+            parentTabId: 'tab-a',
+            startedAt: 1,
+            surfaces: [{ leafId: 'leaf-a', ptyId: 'pty-a' }]
+          }
+        }
       }
     })
 
     expect(merged.terminalTopologyRevisionByRepoId).toBeUndefined()
+    expect(merged.terminalExplicitCloseOperationsById).toBeUndefined()
   })
 })
 

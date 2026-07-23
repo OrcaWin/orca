@@ -1621,7 +1621,11 @@ export function createRemoteRuntimePtyTransport(
             worktreeId,
             provisionalTabId: tabId,
             hostTabId: createdTerminal.tabId,
-            hostTerminalHandle: createdTerminal.handle
+            hostTerminalHandle: createdTerminal.handle,
+            ...(createdTerminal.terminalCloseHandle
+              ? { hostTerminalCloseHandle: createdTerminal.terminalCloseHandle }
+              : {}),
+            pairingRevision: runtimeEnvironmentPairingRevision
           })
           // Snapshot parity must not delay attachment to a terminal the host already created.
           void refreshWebRuntimeSessionTabsSnapshot(createEnvironmentId, worktreeId, {

@@ -875,16 +875,19 @@ export class DaemonServer {
       }
 
       case 'kill': {
-        const canceledPendingSpawn = this.cancelPendingPtySpawnPreparations(
-          request.payload.sessionId
-        )
+        const canceledPendingSpawn = request.payload.expectedIncarnationId
+          ? false
+          : this.cancelPendingPtySpawnPreparations(request.payload.sessionId)
         this.lastInputAtBySessionId.delete(request.payload.sessionId)
         this.log.log('session-killed', {
           sessionId: request.payload.sessionId,
           immediate: request.payload.immediate === true
         })
         try {
-          await this.host.kill(request.payload.sessionId, { immediate: request.payload.immediate })
+          await this.host.kill(request.payload.sessionId, {
+            immediate: request.payload.immediate,
+            expectedIncarnationId: request.payload.expectedIncarnationId
+          })
         } catch (error) {
           // Why: a kill that wins before session registration already canceled the pending spawn, so its intent is done.
           if (!(canceledPendingSpawn && error instanceof SessionNotFoundError)) {

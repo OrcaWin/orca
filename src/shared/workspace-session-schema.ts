@@ -246,6 +246,21 @@ const browserHistoryEntriesSchema = z
 
 // ─── Workspace session ──────────────────────────────────────────────
 
+export const terminalExplicitCloseOperationSchema = z.object({
+  id: z.string(),
+  worktreeId: z.string(),
+  parentTabId: terminalTabIdSchema,
+  startedAt: z.number().finite().nonnegative(),
+  surfaces: z.array(
+    z.object({
+      leafId: z.string(),
+      ptyId: z.string(),
+      incarnationId: z.string().min(1).max(128).optional(),
+      lifecycleGeneration: z.number().int().nonnegative().optional()
+    })
+  )
+})
+
 export const workspaceSessionStateSchema: z.ZodType<WorkspaceSessionState> = z.object({
   activeRepoId: z.string().nullable(),
   activeWorkspaceKey: workspaceKeySchema.nullable().optional(),
@@ -298,6 +313,9 @@ export const workspaceSessionStateSchema: z.ZodType<WorkspaceSessionState> = z.o
   sleepingAgentSessionsByPaneKey: sleepingAgentSessionsByPaneKeySchema,
   terminalPtyIncarnationsByPaneKey: z.record(z.string(), z.string().min(1).max(128)).optional(),
   terminalTopologyRevisionByRepoId: z.record(z.string(), z.number().int().nonnegative()).optional(),
+  terminalExplicitCloseOperationsById: z
+    .record(z.string(), terminalExplicitCloseOperationSchema)
+    .optional(),
   terminalSurfaceTombstonesByPaneKey: z
     .record(
       z.string(),

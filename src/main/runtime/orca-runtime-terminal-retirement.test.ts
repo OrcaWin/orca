@@ -500,7 +500,8 @@ describe('OrcaRuntimeService terminal surface retirement', () => {
             ptyIdsByLeafId: { right: 'pty-right' }
           })
         }
-      })
+      }),
+      'local'
     )
   })
 
@@ -624,7 +625,8 @@ describe('OrcaRuntimeService terminal surface retirement', () => {
         },
         terminalSurfaceTombstonesByPaneKey: {},
         terminalTopologyRevisionByRepoId: { [REPO_ID]: 1 }
-      })
+      }),
+      'local'
     )
     expect(flushOrThrow).toHaveBeenCalledOnce()
   })

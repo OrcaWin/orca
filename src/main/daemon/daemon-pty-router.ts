@@ -8,6 +8,7 @@ import type {
   PtySpawnResult
 } from '../providers/types'
 import type { PtyIncarnationId } from '../../shared/pty-incarnation'
+import type { PtyProviderProbeOptions } from '../../shared/pty-shutdown-authority'
 
 export class DaemonPtyRouter implements IPtyProvider {
   private current: DaemonPtyAdapter
@@ -94,6 +95,13 @@ export class DaemonPtyRouter implements IPtyProvider {
     return this.current.supportsAgentSessionCreateOperations()
   }
 
+  supportsIncarnationBoundShutdown(
+    options: PtyProviderProbeOptions = {}
+  ): boolean | null | Promise<boolean | null> {
+    const adapter = options.ptyId ? this.sessionAdapters.get(options.ptyId) : this.current
+    return adapter?.supportsIncarnationBoundShutdown() ?? null
+  }
+
   async attach(id: string): Promise<void> {
     await this.adapterFor(id).attach(id)
   }
@@ -128,7 +136,12 @@ export class DaemonPtyRouter implements IPtyProvider {
 
   async shutdown(
     id: string,
-    opts: { immediate?: boolean; keepHistory?: boolean; deadlineMs?: number }
+    opts: {
+      immediate?: boolean
+      keepHistory?: boolean
+      deadlineMs?: number
+      expectedIncarnationId?: string
+    }
   ): Promise<void> {
     await this.adapterFor(id).shutdown(id, opts)
     // Why: sleep passes keepHistory=true and re-spawns against the same

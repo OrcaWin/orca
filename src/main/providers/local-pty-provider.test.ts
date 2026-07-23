@@ -1188,6 +1188,23 @@ describe('LocalPtyProvider', () => {
   })
 
   describe('shutdown', () => {
+    it('rejects a stale expected incarnation before signaling the PTY', async () => {
+      const killSpy = vi.fn()
+      mockProc.kill = killSpy
+      const spawned = await provider.spawn({ cols: 80, rows: 24 })
+
+      await expect(
+        provider.shutdown(spawned.id, {
+          immediate: true,
+          expectedIncarnationId: 'replacement-incarnation'
+        })
+      ).rejects.toThrow('pty_incarnation_stale')
+
+      expect(killSpy).not.toHaveBeenCalled()
+      expect(provider.hasPty(spawned.id)).toBe(true)
+      exitCb?.({ exitCode: 0 })
+    })
+
     it('kills the PTY process', async () => {
       // Why: capture the spy reference before shutdown triggers onExit →
       // POSIX kill neutralization. After neutralization, mockProc.kill is
@@ -1471,6 +1488,25 @@ describe('LocalPtyProvider', () => {
       resolveSnapshot(null)
       await Promise.all([first, second])
       expect(captureDescendantSnapshotMock).toHaveBeenCalledOnce()
+    })
+
+    it('does not signal after cancellation wins during descendant capture', async () => {
+      let resolveSnapshot!: (value: null) => void
+      captureDescendantSnapshotMock.mockReturnValue(
+        new Promise<null>((resolve) => {
+          resolveSnapshot = resolve
+        })
+      )
+      const { id } = await provider.spawn({ cols: 80, rows: 24, launchAgent: 'claude' })
+      const controller = new AbortController()
+
+      const shutdown = provider.shutdown(id, { immediate: true, signal: controller.signal })
+      controller.abort()
+      resolveSnapshot(null)
+
+      await expect(shutdown).rejects.toThrow('client_disconnected')
+      expect(mockProc.kill).not.toHaveBeenCalled()
+      expect(terminateDescendantSnapshotMock).not.toHaveBeenCalled()
     })
 
     it('does not signal a captured tree after the tracked root exits naturally', async () => {

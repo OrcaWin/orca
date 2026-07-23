@@ -44,7 +44,10 @@ import type {
 import type { RuntimeMobileSessionTabMove } from '../../shared/runtime-types'
 import { isNativeFileDropPayload, type NativeFileDropPayload } from '../../shared/native-file-drop'
 import { requestMobileMarkdownFromRenderer } from './mobile-markdown-request-relay'
-import { requestTerminalTabCloseFromRenderer } from './terminal-tab-close-request-relay'
+import {
+  requestTerminalTabCloseFromRenderer,
+  requestTerminalTabCloseValidationFromRenderer
+} from './terminal-tab-close-request-relay'
 import type { ClaudeAccountSelectionTarget } from '../claude-accounts/runtime-selection'
 import { runWorktreeChangeInvalidators } from '../ipc/worktree-change-invalidators'
 import {
@@ -367,6 +370,10 @@ function registerRuntimeWindowLifecycle(
       }) as Promise<RuntimeMarkdownSaveTabResult>,
     closeTerminal: (tabId, paneRuntimeId) => send('ui:closeTerminal', { tabId, paneRuntimeId }),
     closeTerminalTab: (tabId) => requestTerminalTabCloseFromRenderer(mainWindow, tabId),
+    validateTerminalTabForHostClose: (tabId, { expectedPtyIds }) =>
+      requestTerminalTabCloseValidationFromRenderer(mainWindow, tabId, expectedPtyIds),
+    finalizeTerminalTabForHostClose: (tabId, expectedPtyIds) =>
+      send('ui:terminalTabCloseFinalization', { tabId, expectedPtyIds }),
     sleepWorktree: (worktreeId) => send('ui:sleepWorktree', { worktreeId }),
     resumeSleepingAgents: (worktreeId) => send('ui:resumeSleepingAgents', { worktreeId }),
     terminalFitOverrideChanged: (ptyId, mode, cols, rows) =>

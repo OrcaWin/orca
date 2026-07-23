@@ -1,12 +1,7 @@
 import type { TabContentType } from '../../../../shared/types'
-import {
-  hasUnroutableTerminalWorktreeOwner,
-  resolveTerminalWorktreeRoute
-} from '@/lib/terminal-worktree-route'
-import { closeWebRuntimeSessionTab, isWebRuntimeSessionActive } from '@/runtime/web-runtime-session'
+import { hasUnroutableTerminalWorktreeOwner } from '@/lib/terminal-worktree-route'
 import { useAppStore } from '@/store'
 import { reconcileTabOrder } from '../tab-bar/reconcile-order'
-import { closeLocalTerminalTabState } from './close-local-terminal-tab-state'
 
 const EDITOR_TAB_CONTENT_TYPES = new Set<TabContentType>([
   'editor',
@@ -29,7 +24,11 @@ function isPinnedVisibleTab(
   )
 }
 
-export function closeOtherTerminalTabs(tabId: string, activeWorktreeId: string | null): void {
+export function closeOtherTerminalTabsWith(
+  tabId: string,
+  activeWorktreeId: string | null,
+  closeTerminalTab: (tabId: string) => void
+): void {
   if (!activeWorktreeId) {
     return
   }
@@ -39,31 +38,19 @@ export function closeOtherTerminalTabs(tabId: string, activeWorktreeId: string |
   }
   const currentTabs = state.tabsByWorktree[activeWorktreeId] ?? []
   state.setActiveTab(tabId)
-  const runtimeEnvironmentId = resolveTerminalWorktreeRoute(
-    state,
-    activeWorktreeId
-  )?.runtimeEnvironmentId
-  const closeHostTerminalTabs = isWebRuntimeSessionActive(runtimeEnvironmentId)
   for (const tab of currentTabs) {
     if (tab.id === tabId || isPinnedVisibleTab(state, activeWorktreeId, tab.id)) {
       continue
     }
-    if (closeHostTerminalTabs) {
-      // Why: prune the mirror immediately, then close on its authoritative host so snapshots converge.
-      closeLocalTerminalTabState(tab.id, { remoteCloseOwnedByHost: true })
-      void closeWebRuntimeSessionTab({
-        worktreeId: activeWorktreeId,
-        tabId: tab.id,
-        environmentId: runtimeEnvironmentId,
-        reason: 'user'
-      })
-    } else {
-      state.closeTab(tab.id)
-    }
+    closeTerminalTab(tab.id)
   }
 }
 
-export function closeTerminalTabsToRight(tabId: string, activeWorktreeId: string | null): void {
+export function closeTerminalTabsToRightWith(
+  tabId: string,
+  activeWorktreeId: string | null,
+  closeTerminalTab: (tabId: string) => void
+): void {
   if (!activeWorktreeId) {
     return
   }
@@ -74,11 +61,6 @@ export function closeTerminalTabsToRight(tabId: string, activeWorktreeId: string
   }
   const currentTerminalTabs = state.tabsByWorktree[activeWorktreeId] ?? []
   const currentEditorFiles = state.openFiles.filter((file) => file.worktreeId === activeWorktreeId)
-  const runtimeEnvironmentId = resolveTerminalWorktreeRoute(
-    state,
-    activeWorktreeId
-  )?.runtimeEnvironmentId
-  const closeHostTerminalTabs = isWebRuntimeSessionActive(runtimeEnvironmentId)
   const terminalIds = currentTerminalTabs.map((tab) => tab.id)
   const terminalIdSet = new Set(terminalIds)
   const orderedIds = reconcileTabOrder(
@@ -96,18 +78,7 @@ export function closeTerminalTabsToRight(tabId: string, activeWorktreeId: string
       continue
     }
     if (terminalIdSet.has(id)) {
-      if (closeHostTerminalTabs) {
-        // Why: prune the mirror immediately, then close on its authoritative host so snapshots converge.
-        closeLocalTerminalTabState(id, { remoteCloseOwnedByHost: true })
-        void closeWebRuntimeSessionTab({
-          worktreeId: activeWorktreeId,
-          tabId: id,
-          environmentId: runtimeEnvironmentId,
-          reason: 'user'
-        })
-      } else {
-        state.closeTab(id)
-      }
+      closeTerminalTab(id)
       continue
     }
     const unifiedTab = (state.unifiedTabsByWorktree?.[activeWorktreeId] ?? []).find(

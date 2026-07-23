@@ -62,11 +62,15 @@ function recordTerminalSurfaceRetirement(
 
 export function retireTerminalSurfaceFromPersistence(
   session: WorkspaceSessionState,
-  surface: RetiredTerminalSurface
+  surface: RetiredTerminalSurface,
+  options: { recordAuthoritativelyAbsentSurface?: boolean } = {}
 ): WorkspaceSessionState {
   const paneKey = `${surface.parentTabId}:${surface.leafId}`
   const boundIncarnationId = session.terminalPtyIncarnationsByPaneKey?.[paneKey]
-  if (surface.incarnationId && boundIncarnationId && boundIncarnationId !== surface.incarnationId) {
+  if (
+    boundIncarnationId &&
+    (!surface.incarnationId || boundIncarnationId !== surface.incarnationId)
+  ) {
     return session
   }
   const persistedTabs = session.tabsByWorktree[surface.worktreeId] ?? []
@@ -80,6 +84,13 @@ export function retireTerminalSurfaceFromPersistence(
 
   const isLegacyFinalSurface = !layout && persistedTab?.ptyId === surface.ptyId
   if (!exactLeafInLayout && !isLegacyFinalSurface) {
+    if (
+      !options.recordAuthoritativelyAbsentSurface &&
+      !boundIncarnationId &&
+      !session.terminalSurfaceTombstonesByPaneKey?.[paneKey]
+    ) {
+      return session
+    }
     // Why: tab.ptyId may describe a live sibling. The absent exact leaf still
     // needs a tombstone, but sibling evidence must not remove its parent.
     return recordTerminalSurfaceRetirement(session, surface, paneKey)
@@ -225,10 +236,17 @@ export function sanitizeWorkspaceSessionTerminalRetirements(
   incoming: WorkspaceSessionState,
   prior: WorkspaceSessionState | undefined
 ): WorkspaceSessionState {
+  const terminalExplicitCloseOperationsById = prior?.terminalExplicitCloseOperationsById
+  const preserveCloseOperations = Boolean(
+    terminalExplicitCloseOperationsById &&
+    Object.keys(terminalExplicitCloseOperationsById).length > 0
+  )
   if (
     !prior?.terminalSurfaceTombstonesByPaneKey &&
     !incoming.terminalSurfaceTombstonesByPaneKey &&
-    !prior?.terminalTopologyRevisionByRepoId
+    !prior?.terminalTopologyRevisionByRepoId &&
+    !incoming.terminalExplicitCloseOperationsById &&
+    !preserveCloseOperations
   ) {
     return incoming
   }
@@ -243,6 +261,9 @@ export function sanitizeWorkspaceSessionTerminalRetirements(
   const hasLegacyTombstones = Object.keys(tombstones).length > 0
   let next: WorkspaceSessionState = {
     ...incoming,
+    terminalExplicitCloseOperationsById: preserveCloseOperations
+      ? terminalExplicitCloseOperationsById
+      : undefined,
     terminalPtyIncarnationsByPaneKey: hasLegacyTombstones
       ? bindings
       : incoming.terminalPtyIncarnationsByPaneKey,

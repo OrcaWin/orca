@@ -42,6 +42,7 @@ export const WORKSPACE_SESSION_FIELD_OWNERSHIP = {
   terminalPtyIncarnationsByPaneKey: 'paneKeyed',
   // Why: this host-issued fence must never collide while unified renderer state merges equal repo ids across hosts.
   terminalTopologyRevisionByRepoId: 'hostPrivate',
+  terminalExplicitCloseOperationsById: 'hostPrivate',
   terminalSurfaceTombstonesByPaneKey: 'surfaceTombstoneKeyed'
 } as const satisfies Record<keyof WorkspaceSessionState, WorkspaceSessionFieldOwnership>
 

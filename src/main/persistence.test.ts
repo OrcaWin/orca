@@ -22,6 +22,7 @@ import type {
   GlobalSettings,
   TerminalPaneLayoutNode,
   TerminalTab,
+  TerminalExplicitCloseOperation,
   WorktreeLineage,
   WorkspaceLineage,
   WorkspaceSessionState
@@ -41,6 +42,7 @@ import { SshConnectionStore } from './ssh/ssh-connection-store'
 import { setSourceControlActionDefault } from '../shared/source-control-ai-actions'
 import { LEGACY_DEFAULT_SSH_RELAY_GRACE_PERIOD_SECONDS } from '../shared/ssh-types'
 import { closeTerminalTabInWorkspaceSession } from '../shared/workspace-session-terminal-tab-close'
+import { getTerminalExplicitCloseWalPath } from './terminal-explicit-close-wal'
 
 // Shared mutable state so the electron mock can reference a per-test directory
 const testState = { dir: '' }
@@ -10511,6 +10513,29 @@ describe('Store host-partitioned workspace sessions', () => {
     activeRepoId
   })
 
+  const makeTerminalExplicitCloseOperation = (
+    id: string,
+    worktreeId = 'repo-1::/worktree'
+  ): TerminalExplicitCloseOperation => ({
+    id,
+    worktreeId,
+    parentTabId: 'tab-1',
+    startedAt: 123,
+    surfaces: [
+      {
+        leafId: TEST_LEAF_1,
+        ptyId: 'pty-live',
+        incarnationId: 'incarnation-live',
+        lifecycleGeneration: 7
+      },
+      {
+        leafId: TEST_LEAF_2,
+        ptyId: 'pty-disconnected',
+        incarnationId: 'incarnation-disconnected'
+      }
+    ]
+  })
+
   const makeBoundHostSession = (ptyId: string | null): WorkspaceSessionState => ({
     ...getDefaultWorkspaceSession(),
     activeRepoId: 'repo-1',
@@ -10773,6 +10798,267 @@ describe('Store host-partitioned workspace sessions', () => {
 
     const reloaded = await createStore()
     expect(reloaded.getWorkspaceSession('runtime:env-a').activeRepoId).toBe('repo-a')
+  })
+
+  it('round-trips an explicit-close journal without losing retire-only surfaces', async () => {
+    const store = await createStore()
+    const operation = makeTerminalExplicitCloseOperation('close-a')
+
+    store.setTerminalExplicitCloseOperation(operation, 'runtime:env-a')
+    store.flush()
+
+    const reloaded = await createStore()
+    expect(
+      reloaded.getWorkspaceSession('runtime:env-a').terminalExplicitCloseOperationsById
+    ).toEqual({ 'close-a': operation })
+  })
+
+  it('preserves host-owned explicit-close journals across general session writes', async () => {
+    const store = await createStore()
+    const operation = makeTerminalExplicitCloseOperation('close-a')
+    store.setTerminalExplicitCloseOperation(operation, 'runtime:env-a')
+
+    store.setWorkspaceSession(makeHostSession('renderer-repo'), 'runtime:env-a')
+
+    expect(store.getWorkspaceSession('runtime:env-a').terminalExplicitCloseOperationsById).toEqual({
+      'close-a': operation
+    })
+  })
+
+  it('completes only the requested explicit-close journal in its host partition', async () => {
+    const store = await createStore()
+    const operationA = makeTerminalExplicitCloseOperation('close-a')
+    const operationB = makeTerminalExplicitCloseOperation('close-b')
+    const otherHostOperation = makeTerminalExplicitCloseOperation(
+      'close-other',
+      'repo-2::/worktree'
+    )
+    store.setTerminalExplicitCloseOperation(operationA, 'runtime:env-a')
+    store.setTerminalExplicitCloseOperation(operationB, 'runtime:env-a')
+    store.setTerminalExplicitCloseOperation(otherHostOperation, 'runtime:env-b')
+
+    store.completeTerminalExplicitCloseOperation(operationA, [], 'runtime:env-a')
+
+    expect(store.getWorkspaceSession('runtime:env-a').terminalExplicitCloseOperationsById).toEqual({
+      'close-b': operationB
+    })
+    expect(store.getWorkspaceSession('runtime:env-b').terminalExplicitCloseOperationsById).toEqual({
+      'close-other': otherHostOperation
+    })
+    expect(store.getWorkspaceSession('local').terminalExplicitCloseOperationsById).toBeUndefined()
+
+    store.setWorkspaceSession(
+      {
+        ...makeHostSession('stale-renderer'),
+        terminalExplicitCloseOperationsById: { 'close-a': operationA }
+      },
+      'runtime:env-a'
+    )
+    expect(store.getWorkspaceSession('runtime:env-a').terminalExplicitCloseOperationsById).toEqual({
+      'close-b': operationB
+    })
+  })
+
+  it('keeps an explicit-close journal available for replay after a failed flush', async () => {
+    const store = await createStore()
+    const operation = makeTerminalExplicitCloseOperation('close-a')
+    store.setTerminalExplicitCloseOperation(operation, 'runtime:env-a')
+    const flush = vi.spyOn(store, 'flushOrThrow').mockImplementationOnce(() => {
+      throw new Error('disk unavailable')
+    })
+
+    expect(() => store.flushOrThrow()).toThrow('disk unavailable')
+    expect(store.getWorkspaceSession('runtime:env-a').terminalExplicitCloseOperationsById).toEqual({
+      'close-a': operation
+    })
+
+    flush.mockRestore()
+    const reloaded = await createStore()
+    expect(
+      reloaded.getWorkspaceSession('runtime:env-a').terminalExplicitCloseOperationsById
+    ).toEqual({ 'close-a': operation })
+  })
+
+  it('keeps an active close WAL authoritative over a later stale primary-file overwrite', async () => {
+    const store = await createStore()
+    store.setWorkspaceSession(makeHostSession('before-close'), 'runtime:env-a')
+    store.flushOrThrow()
+    const stalePrimary = readFileSync(dataFile(), 'utf8')
+    const operation = makeTerminalExplicitCloseOperation('close-a')
+
+    store.setTerminalExplicitCloseOperation(operation, 'runtime:env-a')
+    writeFileSync(dataFile(), stalePrimary, 'utf8')
+
+    const reloaded = await createStore()
+    expect(
+      reloaded.getWorkspaceSession('runtime:env-a').terminalExplicitCloseOperationsById
+    ).toEqual({ 'close-a': operation })
+  })
+
+  it('coalesces and compacts confirmed close bursts during long-lived serve sessions', async () => {
+    const store = await createStore()
+    for (let index = 0; index < 25; index += 1) {
+      const operation = makeTerminalExplicitCloseOperation(`close-${index}`)
+      store.setTerminalExplicitCloseOperation(operation, 'runtime:env-a')
+      store.completeTerminalExplicitCloseOperation(operation, [], 'runtime:env-a')
+    }
+
+    await store.waitForPendingWrite()
+
+    expect(existsSync(getTerminalExplicitCloseWalPath(dataFile()))).toBe(false)
+    expect(
+      store.getWorkspaceSession('runtime:env-a').terminalExplicitCloseOperationsById
+    ).toBeUndefined()
+  })
+
+  it('does not replay a confirmed retire-only surface across a newer topology admission', async () => {
+    const store = await createStore()
+    const session = makeBoundHostSession('pty-live')
+    const operation = {
+      ...makeTerminalExplicitCloseOperation('close-a'),
+      surfaces: [{ leafId: TEST_LEAF_1, ptyId: 'pty-live' }]
+    }
+    store.setWorkspaceSession(session, 'runtime:env-a')
+    store.setTerminalExplicitCloseOperation(operation, 'runtime:env-a')
+    store.completeTerminalExplicitCloseOperation(operation, operation.surfaces, 'runtime:env-a')
+    const replacement = {
+      ...session,
+      terminalTopologyRevisionByRepoId: { 'repo-1': 2 }
+    }
+
+    store.setWorkspaceSession(replacement, 'runtime:env-a')
+
+    expect(
+      store.getWorkspaceSession('runtime:env-a').tabsByWorktree[operation.worktreeId]
+    ).toHaveLength(1)
+  })
+
+  it('replays confirmed retirements after a stale primary-file overwrite', async () => {
+    const store = await createStore()
+    const session = {
+      ...makeBoundHostSession('pty-live'),
+      terminalPtyIncarnationsByPaneKey: { [`tab-1:${TEST_LEAF_1}`]: 'incarnation-live' }
+    }
+    store.setWorkspaceSession(session, 'runtime:env-a')
+    store.flushOrThrow()
+    const stalePrimary = readFileSync(dataFile(), 'utf8')
+    const operation = makeTerminalExplicitCloseOperation('close-a')
+    store.setTerminalExplicitCloseOperation(operation, 'runtime:env-a')
+    store.completeTerminalExplicitCloseOperation(
+      operation,
+      [operation.surfaces[0]!],
+      'runtime:env-a'
+    )
+    const once = store.getWorkspaceSession('runtime:env-a')
+    store.setWorkspaceSession(once, 'runtime:env-a')
+    const twice = store.getWorkspaceSession('runtime:env-a')
+    expect(twice.terminalTopologyRevisionByRepoId).toEqual(once.terminalTopologyRevisionByRepoId)
+    expect(existsSync(getTerminalExplicitCloseWalPath(dataFile()))).toBe(true)
+    writeFileSync(dataFile(), stalePrimary, 'utf8')
+
+    const reloaded = await createStore()
+    expect(
+      reloaded.getWorkspaceSession('runtime:env-a').tabsByWorktree[operation.worktreeId]
+    ).toEqual([])
+    expect(existsSync(getTerminalExplicitCloseWalPath(dataFile()))).toBe(false)
+  })
+
+  it('replays same-repo confirmations by topology revision, not journal insertion order', async () => {
+    const store = await createStore()
+    const worktreeB = 'repo-1::/worktree-b'
+    const session = {
+      ...makeBoundHostSession('pty-a'),
+      tabsByWorktree: {
+        ...makeBoundHostSession('pty-a').tabsByWorktree,
+        [worktreeB]: [
+          {
+            ...makeBoundHostSession('pty-a').tabsByWorktree['repo-1::/worktree'][0]!,
+            id: 'tab-2',
+            worktreeId: worktreeB,
+            ptyId: 'pty-b'
+          }
+        ]
+      },
+      terminalLayoutsByTabId: {
+        ...makeBoundHostSession('pty-a').terminalLayoutsByTabId,
+        'tab-2': {
+          root: { type: 'leaf' as const, leafId: TEST_LEAF_2 },
+          activeLeafId: TEST_LEAF_2,
+          expandedLeafId: null,
+          ptyIdsByLeafId: { [TEST_LEAF_2]: 'pty-b' }
+        }
+      },
+      terminalPtyIncarnationsByPaneKey: {
+        [`tab-1:${TEST_LEAF_1}`]: 'incarnation-a',
+        [`tab-2:${TEST_LEAF_2}`]: 'incarnation-b'
+      }
+    }
+    const operationA = {
+      ...makeTerminalExplicitCloseOperation('close-a'),
+      surfaces: [{ leafId: TEST_LEAF_1, ptyId: 'pty-a', incarnationId: 'incarnation-a' }]
+    }
+    const operationB = {
+      ...makeTerminalExplicitCloseOperation('close-b', worktreeB),
+      parentTabId: 'tab-2',
+      surfaces: [{ leafId: TEST_LEAF_2, ptyId: 'pty-b', incarnationId: 'incarnation-b' }]
+    }
+    store.setWorkspaceSession(session, 'runtime:env-a')
+    store.flushOrThrow()
+    const stalePrimary = readFileSync(dataFile(), 'utf8')
+    store.setTerminalExplicitCloseOperation(operationA, 'runtime:env-a')
+    store.setTerminalExplicitCloseOperation(operationB, 'runtime:env-a')
+
+    store.completeTerminalExplicitCloseOperation(operationB, operationB.surfaces, 'runtime:env-a')
+    store.completeTerminalExplicitCloseOperation(operationA, operationA.surfaces, 'runtime:env-a')
+    writeFileSync(dataFile(), stalePrimary, 'utf8')
+
+    const reloaded = await createStore()
+    expect(reloaded.getWorkspaceSession('runtime:env-a').tabsByWorktree).toMatchObject({
+      'repo-1::/worktree': [],
+      [worktreeB]: []
+    })
+  })
+
+  it('recovers when confirmed WAL persistence wins just before primary mutation fails', async () => {
+    const store = await createStore()
+    const session = {
+      ...makeBoundHostSession('pty-live'),
+      terminalPtyIncarnationsByPaneKey: { [`tab-1:${TEST_LEAF_1}`]: 'incarnation-live' }
+    }
+    store.setWorkspaceSession(session, 'runtime:env-a')
+    store.flushOrThrow()
+    const operation = makeTerminalExplicitCloseOperation('close-a')
+    store.setTerminalExplicitCloseOperation(operation, 'runtime:env-a')
+    const setSession = vi.spyOn(store, 'setWorkspaceSession').mockImplementationOnce(() => {
+      throw new Error('primary mutation interrupted')
+    })
+
+    expect(() =>
+      store.completeTerminalExplicitCloseOperation(
+        operation,
+        [operation.surfaces[0]!],
+        'runtime:env-a'
+      )
+    ).toThrow('primary mutation interrupted')
+    setSession.mockRestore()
+
+    const reloaded = await createStore()
+    expect(
+      reloaded.getWorkspaceSession('runtime:env-a').tabsByWorktree[operation.worktreeId]
+    ).toEqual([])
+  })
+
+  it('fails closed without replacing a corrupt terminal close WAL', async () => {
+    mkdirSync(testState.dir, { recursive: true })
+    const walPath = getTerminalExplicitCloseWalPath(dataFile())
+    writeFileSync(walPath, '{corrupt', 'utf8')
+    const store = await createStore()
+    const operation = makeTerminalExplicitCloseOperation('close-a')
+
+    expect(() => store.setTerminalExplicitCloseOperation(operation, 'runtime:env-a')).toThrow(
+      'terminal_close_journal_unavailable'
+    )
+    expect(readFileSync(walPath, 'utf8')).toBe('{corrupt')
   })
 
   it('drops a corrupt host partition to defaults without failing the others', async () => {

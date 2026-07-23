@@ -1493,8 +1493,8 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
   defineMethod({
     name: 'terminal.closeTab',
     params: TerminalHandle,
-    handler: async (params, { runtime }) => ({
-      close: await runtime.closeTerminalTab(params.terminal)
+    handler: async (params, { runtime, signal }) => ({
+      close: await runtime.closeTerminalTab(params.terminal, signal ? { signal } : {})
     })
   }),
   defineMethod({

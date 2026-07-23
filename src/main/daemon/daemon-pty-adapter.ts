@@ -13,6 +13,7 @@ import {
   AGENT_SESSION_CLAIM_DAEMON_PROTOCOL_VERSION,
   AGENT_SESSION_CREATE_OPERATION_DAEMON_PROTOCOL_VERSION,
   GIT_CREDENTIAL_GUARD_HOST_PROTOCOL_VERSION,
+  INCARNATION_BOUND_SHUTDOWN_DAEMON_PROTOCOL_VERSION,
   PROTOCOL_VERSION,
   supportsPtyStartupIngress,
   type CreateOrAttachResult,
@@ -42,6 +43,10 @@ import { recognizeAgentProcessFromCommandLine } from '../../shared/agent-process
 import { shouldUseShellReadyStartupDelivery } from '../../shared/codex-startup-delivery'
 import type { TerminalOscLinkRange } from '../../shared/terminal-osc-link-ranges'
 import type { PtyIncarnationId } from '../../shared/pty-incarnation'
+import {
+  assertPtyShutdownActive,
+  type PtyShutdownOptions
+} from '../../shared/pty-shutdown-authority'
 import { resolveSafePtyDefaultCwd } from '../providers/pty-default-cwd'
 
 type ColdRestorePayload = {
@@ -211,6 +216,10 @@ export class DaemonPtyAdapter implements IPtyProvider {
   supportsAgentSessionCreateOperations(): boolean {
     // Why: old daemons never advertised the lower-owner protocol, so preserve their legacy launch.
     return this.protocolVersion >= AGENT_SESSION_CREATE_OPERATION_DAEMON_PROTOCOL_VERSION
+  }
+
+  supportsIncarnationBoundShutdown(): boolean {
+    return this.protocolVersion >= INCARNATION_BOUND_SHUTDOWN_DAEMON_PROTOCOL_VERSION
   }
 
   async spawn(opts: PtySpawnOptions): Promise<PtySpawnResult> {
@@ -638,22 +647,29 @@ export class DaemonPtyAdapter implements IPtyProvider {
     this.client.notify('setSessionBackground', { sessionId: id, background: safeBackground })
   }
 
-  async shutdown(
-    id: string,
-    opts: { immediate?: boolean; keepHistory?: boolean; deadlineMs?: number }
-  ): Promise<void> {
+  async shutdown(id: string, opts: PtyShutdownOptions): Promise<void> {
+    assertPtyShutdownActive(opts)
+    if (
+      opts.expectedIncarnationId &&
+      this.protocolVersion < INCARNATION_BOUND_SHUTDOWN_DAEMON_PROTOCOL_VERSION
+    ) {
+      throw new Error('pty_incarnation_shutdown_unsupported')
+    }
     // Why: shutdown can be the first lazy-client operation after restart; connect
     // before killing so a healthy daemon session is not orphaned (#7742). Connect
     // and kill share the caller's one absolute deadline, so a wedged handshake
     // cannot burn the whole teardown budget before the kill even starts.
     await this.ensureConnected(opts.deadlineMs)
+    assertPtyShutdownActive(opts)
     // Why: sleep/exact-stop kills the live PTY before the periodic checkpoint may run.
     // Force a final snapshot so wake can restore the pane users left.
     if (opts.keepHistory) {
       if (this.checkpointInFlight) {
         await this.checkpointInFlight
+        assertPtyShutdownActive(opts)
       }
       await this.checkpointSessions([id], { final: true, teardown: true })
+      assertPtyShutdownActive(opts)
       const wslDistro = this.wslDistrosBySessionId.get(id)
       const detected = this.historyReader?.detectColdRestore(id, { wslDistro }) ?? null
       const restoreInfo = detected
@@ -675,9 +691,14 @@ export class DaemonPtyAdapter implements IPtyProvider {
         this.historyManager?.suspendSession(id)
       }
     }
+    assertPtyShutdownActive(opts)
     await this.client.request(
       'kill',
-      { sessionId: id, immediate: opts.immediate ?? false },
+      {
+        sessionId: id,
+        immediate: opts.immediate ?? false,
+        ...(opts.expectedIncarnationId ? { expectedIncarnationId: opts.expectedIncarnationId } : {})
+      },
       remainingRequestTimeoutMs(opts.deadlineMs)
     )
     this.activeSessionIds.delete(id)

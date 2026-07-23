@@ -59,6 +59,7 @@ import {
   isAgentSessionSurfaceBinding,
   type AgentSessionOwnerBinding
 } from '../shared/agent-session-host-authority'
+import { PTY_INCARNATION_BOUND_SHUTDOWN_VERSION } from '../shared/pty-shutdown-authority'
 
 function isMissingNodePtyNativeBinding(error: unknown): boolean {
   return (
@@ -624,7 +625,8 @@ export class PtyHandler {
     this.dispatcher.onRequest('pty.getCapabilities', async () => ({
       startupIngressVersion: PTY_STARTUP_INGRESS_VERSION,
       agentSessionClaimVersion: AGENT_SESSION_EXECUTION_OWNER_PROTOCOL_VERSION,
-      agentSessionCreateOperationVersion: AGENT_SESSION_CREATE_OPERATION_PROTOCOL_VERSION
+      agentSessionCreateOperationVersion: AGENT_SESSION_CREATE_OPERATION_PROTOCOL_VERSION,
+      shutdownIncarnationVersion: PTY_INCARNATION_BOUND_SHUTDOWN_VERSION
     }))
     this.dispatcher.onRequest('pty.listProcesses', () => this.listProcesses())
     this.dispatcher.onRequest('pty.getDefaultShell', async () => resolveDefaultShell())
@@ -1232,6 +1234,12 @@ export class PtyHandler {
     const managed = this.ptys.get(id)
     if (!managed) {
       return
+    }
+    if (
+      typeof params.expectedIncarnationId === 'string' &&
+      managed.incarnationId !== params.expectedIncarnationId
+    ) {
+      throw new Error('pty_incarnation_stale')
     }
 
     if (immediate) {

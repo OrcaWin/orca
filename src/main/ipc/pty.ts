@@ -2539,10 +2539,15 @@ export function registerPtyHandlers(
   async function shutdownProviderAndDetectExit(
     provider: IPtyProvider,
     id: string,
-    opts: { immediate?: boolean; keepHistory?: boolean; deadlineMs?: number }
+    opts: {
+      immediate?: boolean
+      keepHistory?: boolean
+      deadlineMs?: number
+      expectedIncarnationId?: string
+    }
   ): Promise<boolean> {
     let providerExitObserved = false
-    const expectedIncarnationId = ptyIncarnationById.get(id)
+    const expectedIncarnationId = opts.expectedIncarnationId ?? ptyIncarnationById.get(id)
     const unsubscribe = provider.onExit((payload) => {
       if (
         payload.id === id &&
@@ -3672,6 +3677,11 @@ export function registerPtyHandlers(
       // below; each RPC leaf converts it to the remaining time when it issues, so
       // sequential RPCs share the budget and cannot overrun the sweep deadline.
       const deadlineMs = opts?.deadlineMs
+      const stopIsActive = (): boolean =>
+        opts?.signal?.aborted !== true && (deadlineMs === undefined || Date.now() < deadlineMs)
+      if (!stopIsActive()) {
+        return false
+      }
       const startupPromise = getLocalPtyProviderStartupPromise(connectionId)
       if (startupPromise) {
         // Why: exact-stop must resolve the provider after daemon startup just
@@ -3695,11 +3705,25 @@ export function registerPtyHandlers(
           await startupPromise
         }
       }
+      if (!stopIsActive()) {
+        return false
+      }
+      const cachedIncarnationId = ptyIncarnationById.get(ptyId)
+      if (
+        opts?.expectedIncarnationId &&
+        cachedIncarnationId !== undefined &&
+        cachedIncarnationId !== opts.expectedIncarnationId
+      ) {
+        return false
+      }
       let provider: IPtyProvider
       try {
         provider = connectionId ? getProvider(connectionId) : getProviderForPty(ptyId)
       } catch {
         if (connectionId) {
+          if (!stopIsActive()) {
+            return false
+          }
           // Why: an absent SSH provider means there is no live target left to
           // await, but the relay lease must still be tombstoned.
           const incarnationId = finishPtyShutdown(ptyId, connectionId, store)
@@ -3710,12 +3734,19 @@ export function registerPtyHandlers(
         }
         return false
       }
+      if (!stopIsActive()) {
+        return false
+      }
       let providerExitObserved = false
       try {
         providerExitObserved = await shutdownProviderAndDetectExit(provider, ptyId, {
           immediate: true,
           keepHistory: opts?.keepHistory ?? false,
-          deadlineMs
+          deadlineMs,
+          ...(opts?.signal ? { signal: opts.signal } : {}),
+          ...(opts?.expectedIncarnationId
+            ? { expectedIncarnationId: opts.expectedIncarnationId }
+            : {})
         })
       } catch (err) {
         if (!isPtyAlreadyGoneError(err)) {
@@ -3735,6 +3766,14 @@ export function registerPtyHandlers(
             err instanceof Error ? err.message : String(err)
           }`
         )
+        return false
+      }
+      const currentIncarnationId = ptyIncarnationById.get(ptyId)
+      if (
+        opts?.expectedIncarnationId &&
+        currentIncarnationId !== undefined &&
+        currentIncarnationId !== opts.expectedIncarnationId
+      ) {
         return false
       }
       const incarnationId = finishPtyShutdown(ptyId, connectionId, store)
@@ -3792,11 +3831,31 @@ export function registerPtyHandlers(
         return null
       }
     },
+    supportsIncarnationBoundShutdown: async (ptyId, signal) => {
+      try {
+        const provider = getProviderForPty(ptyId)
+        return (await provider.supportsIncarnationBoundShutdown?.({ ptyId, signal })) ?? null
+      } catch {
+        return null
+      }
+    },
     listProcesses: async () => {
-      const providerSessions = await Promise.all([
-        localProvider.listProcesses(),
-        ...Array.from(sshProviders.values(), (provider) => provider.listProcesses())
-      ])
+      const providers = [localProvider, ...sshProviders.values()]
+      const providerSessions = await Promise.all(
+        providers.map(async (provider) => {
+          const sessions = await provider.listProcesses()
+          return await Promise.all(
+            sessions.map(async (session) => {
+              const capability =
+                (await provider.supportsIncarnationBoundShutdown?.({ ptyId: session.id })) ?? null
+              return {
+                ...session,
+                incarnationBoundShutdown: capability
+              }
+            })
+          )
+        })
+      )
       return providerSessions.flat()
     },
     serializeBuffer: (ptyId, opts) => {

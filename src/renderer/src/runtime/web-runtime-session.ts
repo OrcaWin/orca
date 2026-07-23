@@ -673,6 +673,54 @@ export async function closeWebRuntimeSessionTab(args: {
   return callWebRuntimeSessionTabMethod('session.tabs.close', args)
 }
 
+export async function closeWebRuntimeTerminalTab(args: {
+  worktreeId: string
+  tabId: string
+  terminal: string
+  environmentId?: string | null
+}): Promise<boolean> {
+  const environmentId =
+    args.environmentId?.trim() ??
+    useAppStore.getState().settings?.activeRuntimeEnvironmentId?.trim() ??
+    null
+  if (!environmentId || !isWebRuntimeSessionActive(environmentId)) {
+    return false
+  }
+  const intentOwner = captureWebSessionIntentOwner(environmentId)
+  const callEnvironment = captureRuntimeEnvironmentCall(environmentId, intentOwner.pairingRevision)
+  const hostTabId = toHostSessionTabId(args.tabId)
+
+  // Why: an in-flight pre-close snapshot must not flash the mirror back while either close route resolves.
+  recordWebSessionCloseIntent(intentOwner, args.worktreeId, hostTabId, Date.now())
+
+  try {
+    const response = await callEnvironment({
+      method: 'terminal.closeTab',
+      params: { terminal: args.terminal },
+      timeoutMs: 60_000
+    })
+    unwrapRuntimeRpcResult(response as RuntimeRpcResponse<RuntimeTerminalClose>)
+    await refreshWebRuntimeSessionTabsSnapshot(environmentId, args.worktreeId, {
+      expectedEnvironmentPairingRevision: intentOwner.pairingRevision
+    })
+    return true
+  } catch (error) {
+    clearWebSessionCloseIntent(intentOwner, args.worktreeId, hostTabId)
+    if (matchesWebSessionIntentOwner(intentOwner)) {
+      const { acceptReplayedWebSessionTabsSnapshot } = await import('./web-session-tabs-sync')
+      acceptReplayedWebSessionTabsSnapshot(environmentId, args.worktreeId)
+      await refreshWebRuntimeSessionTabsSnapshot(environmentId, args.worktreeId, {
+        expectedEnvironmentPairingRevision: intentOwner.pairingRevision
+      })
+    }
+    console.warn(
+      '[web-runtime-session] failed to close terminal tab:',
+      error instanceof Error ? error.message : String(error)
+    )
+    return false
+  }
+}
+
 export async function moveWebRuntimeSessionTab(
   args: RuntimeMobileSessionTabMove & {
     worktreeId: string

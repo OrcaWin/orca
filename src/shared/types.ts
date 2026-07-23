@@ -1078,6 +1078,20 @@ export type PersistedOpenFile = {
   liveTail?: boolean
 }
 
+export type TerminalExplicitCloseOperation = {
+  id: string
+  worktreeId: string
+  parentTabId: string
+  startedAt: number
+  surfaces: {
+    leafId: string
+    ptyId: string
+    incarnationId?: string
+    /** Present only when this surface was live and eligible for destructive shutdown. */
+    lifecycleGeneration?: number
+  }[]
+}
+
 export type WorkspaceSessionState = {
   activeRepoId: string | null
   /** Scope-aware active owner for folder workspaces. Legacy worktree UI still reads activeWorktreeId. */
@@ -1144,6 +1158,8 @@ export type WorkspaceSessionState = {
   terminalPtyIncarnationsByPaneKey?: Record<string, string>
   /** Monotonic host authority watermark for terminal membership in each repo. */
   terminalTopologyRevisionByRepoId?: Record<string, number>
+  /** Host-owned crash recovery records; renderer session writes must preserve them verbatim. */
+  terminalExplicitCloseOperationsById?: Record<string, TerminalExplicitCloseOperation>
   /** Legacy per-surface fences migrated into terminalTopologyRevisionByRepoId on load. */
   terminalSurfaceTombstonesByPaneKey?: Record<
     string,

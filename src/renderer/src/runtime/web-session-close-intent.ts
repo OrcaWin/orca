@@ -2,7 +2,7 @@
 
 import { webSessionIntentOwnerKey, type WebSessionIntentOwner } from './web-session-intent-owner'
 
-const CLOSE_INTENT_TTL_MS = 10_000
+const CLOSE_INTENT_TTL_MS = 65_000
 
 type CloseIntent = { recordedAt: number }
 

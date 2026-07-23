@@ -243,6 +243,10 @@ export type RuntimeMobileSessionTerminalClientTab =
   | (RuntimeMobileSessionTerminalTab & {
       status: 'ready'
       terminal: string
+      /** Generation-bound authority for whole-tab destruction; older hosts omit it. */
+      terminalCloseHandle?: string
+      /** Explicit compatibility lane for a lower provider that cannot enforce incarnation CAS. */
+      terminalCloseLegacy?: true
     })
 
 export type RuntimeMobileSessionClientTab =
@@ -291,6 +295,7 @@ export type RuntimeMobileSessionTabCloseResult = {
     | 'live-host-pty'
     | 'unknown-liveness'
     | 'retirement-owner'
+    | 'close-in-progress'
   // Why: only a republished snapshot can restore a live mirror; dead-leaf refusals intentionally omit this marker.
   snapshotRepublished?: true
 }
@@ -316,6 +321,8 @@ export type RuntimeMobileSessionTabsResult = {
   worktree: string
   publicationEpoch: string
   snapshotVersion: number
+  /** Explicitly distinguishes capable hosts missing authority from legacy hosts. */
+  terminalCloseAuthority?: 'generation-bound'
   /** Live-only targeted command; omitted from durable/list snapshots so reconnect cannot replay navigation. */
   navigationIntent?: 'follow'
   activeGroupId: string | null
@@ -583,6 +590,10 @@ export type RuntimeTerminalCreateRequestPayload =
 
 export type RuntimeTerminalCreate = {
   handle: string
+  /** Generation-bound whole-tab close authority; capable older hosts may omit it. */
+  terminalCloseHandle?: string
+  /** Explicit compatibility lane for a lower provider that cannot enforce incarnation CAS. */
+  terminalCloseLegacy?: true
   tabId?: string
   paneKey?: string | null
   ptyId?: string | null

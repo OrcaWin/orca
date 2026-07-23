@@ -1,5 +1,11 @@
 import type { DaemonPtyAdapter } from './daemon-pty-adapter'
+import type {
+  PtyProviderProbeOptions,
+  PtyShutdownOptions
+} from '../../shared/pty-shutdown-authority'
 import { shutdownDegradedFallbackSessions } from './degraded-daemon-fallback-shutdown'
+import { probeDegradedDaemonPtyShutdownCapability } from './degraded-daemon-pty-shutdown-capability'
+import { reconcileDegradedDaemonSessionsOnStartup } from './degraded-daemon-startup-reconciliation'
 import type {
   IPtyProvider,
   PtyBackgroundStreamEvent,
@@ -85,6 +91,16 @@ export class DegradedDaemonPtyProvider implements IPtyProvider {
       this.sessionProviders.get(ptyId) ?? this.findProviderForExistingSession(ptyId)
     )?.providesAgentSessionOwnerListings?.(ptyId) === true
 
+  supportsIncarnationBoundShutdown = (
+    options: PtyProviderProbeOptions = {}
+  ): ReturnType<NonNullable<IPtyProvider['supportsIncarnationBoundShutdown']>> =>
+    probeDegradedDaemonPtyShutdownCapability({
+      options,
+      fallback: this.fallback,
+      findOwner: (ptyId) =>
+        this.sessionProviders.get(ptyId) ?? this.findProviderForExistingSession(ptyId)
+    })
+
   write(id: string, data: string): void {
     this.providerFor(id).write(id, data)
   }
@@ -105,10 +121,7 @@ export class DegradedDaemonPtyProvider implements IPtyProvider {
     this.providerFor(id).setPtyBackgrounded?.(id, background)
   }
 
-  async shutdown(
-    id: string,
-    opts: { immediate?: boolean; keepHistory?: boolean; deadlineMs?: number }
-  ): Promise<void> {
+  async shutdown(id: string, opts: PtyShutdownOptions): Promise<void> {
     await this.providerFor(id).shutdown(id, opts)
     if (!opts.keepHistory) {
       this.sessionProviders.delete(id)
@@ -249,20 +262,11 @@ export class DegradedDaemonPtyProvider implements IPtyProvider {
     alive: string[]
     killed: string[]
   }> {
-    const alive: string[] = []
-    const killed: string[] = []
-    for (const adapter of this.allDaemonAdapters()) {
-      const result = await adapter.reconcileOnStartup(validWorktreeIds)
-      for (const id of result.alive) {
-        alive.push(id)
-        this.sessionProviders.set(id, adapter)
-      }
-      for (const id of result.killed) {
-        killed.push(id)
-        this.sessionProviders.delete(id)
-      }
-    }
-    return { alive, killed }
+    return reconcileDegradedDaemonSessionsOnStartup(
+      this.allDaemonAdapters(),
+      this.sessionProviders,
+      validWorktreeIds
+    )
   }
 
   dispose(): void {

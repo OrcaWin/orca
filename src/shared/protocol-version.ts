@@ -61,6 +61,8 @@ export const AGENT_SESSION_HOST_AUTHORITY_RUNTIME_CAPABILITY =
   'agent-session.host-authority.v1' as const
 // Why: older runtimes strip mutation owner fields, so clients must fence writes before RPC.
 export const FILE_MUTATION_OWNERSHIP_RUNTIME_CAPABILITY = 'files.mutation-ownership.v1' as const
+export const TERMINAL_EXPLICIT_CLOSE_AUTHORITY_RUNTIME_CAPABILITY =
+  'terminal.explicit-close-authority.v1' as const
 export const FILE_MUTATION_OWNERSHIP_UPDATE_REQUIRED_MESSAGE =
   'Remote file changes require a newer Orca server. Update the HUB and try again.'
 
@@ -85,7 +87,8 @@ export const RUNTIME_CAPABILITIES = [
   TERMINAL_CREATE_IDEMPOTENCY_RUNTIME_CAPABILITY,
   REMOTE_SERVER_UPDATE_CAPABILITY,
   AGENT_SESSION_HOST_AUTHORITY_RUNTIME_CAPABILITY,
-  FILE_MUTATION_OWNERSHIP_RUNTIME_CAPABILITY
+  FILE_MUTATION_OWNERSHIP_RUNTIME_CAPABILITY,
+  TERMINAL_EXPLICIT_CLOSE_AUTHORITY_RUNTIME_CAPABILITY
 ] as const
 
 export type RuntimeCapability = (typeof RUNTIME_CAPABILITIES)[number] | (string & {})

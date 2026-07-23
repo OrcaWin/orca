@@ -9,7 +9,10 @@ import {
   unlinkSync,
   copyFileSync,
   statSync,
-  realpathSync
+  realpathSync,
+  openSync,
+  closeSync,
+  fsyncSync
 } from 'node:fs'
 import { writeFile, rename, mkdir, rm, copyFile } from 'node:fs/promises'
 import { join, dirname, isAbsolute, resolve, sep } from 'node:path'
@@ -62,6 +65,7 @@ import type {
   LegacyPaneKeyAliasEntry,
   TerminalPaneLayoutNode,
   TerminalLayoutSnapshot,
+  TerminalExplicitCloseOperation,
   TerminalTab,
   WorkspaceSessionPatch,
   WorkspaceSessionState
@@ -79,7 +83,11 @@ import {
 import type { MigrationUnsupportedPtyEntry } from '../shared/agent-status-types'
 import { MOBILE_PAIRING_USERDATA_FILES } from './runtime/mobile-pairing-files'
 import { normalizePersistedMobileClientTabSelections } from './runtime/client-session-tab-selection-persistence'
-import { sanitizeWorkspaceSessionTerminalRetirements } from './runtime/mobile-session-terminal-persistence-retirement'
+import {
+  retireTerminalSurfaceFromPersistence,
+  sanitizeWorkspaceSessionTerminalRetirements
+} from './runtime/mobile-session-terminal-persistence-retirement'
+import { TerminalExplicitCloseWal } from './terminal-explicit-close-wal'
 import {
   removeRepoFromHostWorkspaceSessions,
   removeRepoFromWorkspaceSession
@@ -2557,10 +2565,13 @@ export type StoreOptions = {
 export class Store {
   private state: PersistedState
   private readonly dataFile: string
+  private readonly terminalExplicitCloseWal: TerminalExplicitCloseWal
   private readonly activeViewPreference: ActiveViewPreference
   private readonly terminalScrollbackSnapshotStorage: TerminalScrollbackSnapshotStorage
   private writeTimer: ReturnType<typeof setTimeout> | null = null
   private pendingWrite: Promise<void> | null = null
+  private primaryWriteTail: Promise<void> = Promise.resolve()
+  private terminalCloseCheckpointTimer: ReturnType<typeof setTimeout> | null = null
   private writeGeneration = 0
   // Why: after a profile transfer rewrites this file on disk, a late flush of stale in-memory state would resurrect the moved project.
   private writesFrozen = false
@@ -2591,6 +2602,8 @@ export class Store {
     const loaded = this.load()
     const normalized = normalizePersistedPaneIdentityState(loaded)
     this.state = normalized.state
+    this.terminalExplicitCloseWal = new TerminalExplicitCloseWal(this.dataFile)
+    this.recoverTerminalExplicitCloseWal()
     // Why: activeView is a frequent, tiny preference; keeping it beside the
     // profile avoids serializing the multi-MB recovery store on navigation.
     this.activeViewPreference = new ActiveViewPreference(this.dataFile, this.state.ui?.activeView)
@@ -2612,6 +2625,87 @@ export class Store {
     if (normalized.changed || this.loadNeedsSave || adaptedProjectGroups) {
       // Why: rewrite legacy pane:1 leaves so older renderer writes can't revive them; other migrations also set loadNeedsSave.
       this.scheduleSave()
+    }
+  }
+
+  private recoverTerminalExplicitCloseWal(): void {
+    let entries = this.terminalExplicitCloseWal.entries()
+    const walOperationKeys = new Set(
+      entries.map(({ hostId, entry }) => `${hostId}\0${entry.operation.id}`)
+    )
+    const sessions = [
+      { hostId: LOCAL_EXECUTION_HOST_ID, session: this.state.workspaceSession },
+      ...Object.entries(this.state.workspaceSessionsByHostId ?? {}).map(([hostId, session]) => ({
+        hostId,
+        session
+      }))
+    ]
+    try {
+      for (const { hostId, session } of sessions) {
+        for (const operation of Object.values(session?.terminalExplicitCloseOperationsById ?? {})) {
+          if (!walOperationKeys.has(`${hostId}\0${operation.id}`)) {
+            this.terminalExplicitCloseWal.setActive(hostId, operation)
+          }
+        }
+      }
+      entries = this.terminalExplicitCloseWal.entries()
+    } catch (error) {
+      console.error('[persistence] Failed to migrate terminal close journal into WAL:', error)
+    }
+
+    let recoveredConfirmedEntry = false
+    for (const { hostId, entry } of entries) {
+      let session =
+        hostId === LOCAL_EXECUTION_HOST_ID
+          ? this.state.workspaceSession
+          : (this.state.workspaceSessionsByHostId?.[hostId] ?? getDefaultWorkspaceSession())
+      if (entry.phase === 'confirmed') {
+        const repoId = getRepoIdFromWorktreeId(entry.operation.worktreeId)
+        const currentRevision = session.terminalTopologyRevisionByRepoId?.[repoId] ?? 0
+        if (currentRevision >= entry.topologyRevision) {
+          recoveredConfirmedEntry = true
+        } else {
+          for (const surface of entry.retiredSurfaces) {
+            session = retireTerminalSurfaceFromPersistence(session, {
+              worktreeId: entry.operation.worktreeId,
+              parentTabId: entry.operation.parentTabId,
+              leafId: surface.leafId,
+              ptyId: surface.ptyId,
+              ...(surface.incarnationId ? { incarnationId: surface.incarnationId } : {})
+            })
+          }
+        }
+        recoveredConfirmedEntry = true
+      }
+      const operations = { ...session.terminalExplicitCloseOperationsById }
+      if (entry.phase === 'active') {
+        operations[entry.operation.id] = entry.operation
+      } else {
+        delete operations[entry.operation.id]
+      }
+      session = {
+        ...session,
+        terminalExplicitCloseOperationsById:
+          Object.keys(operations).length > 0 ? operations : undefined
+      }
+      if (hostId === LOCAL_EXECUTION_HOST_ID) {
+        this.state.workspaceSession = session
+      } else {
+        this.state.workspaceSessionsByHostId = {
+          ...this.state.workspaceSessionsByHostId,
+          [hostId]: session
+        }
+      }
+    }
+    if (!recoveredConfirmedEntry) {
+      return
+    }
+    try {
+      // Why: startup has no older async rename in flight, so this safely checkpoints confirmed WAL retirements.
+      this.writeToDiskSync({ force: true, durable: true })
+      this.terminalExplicitCloseWal.compactConfirmed()
+    } catch (error) {
+      console.error('[persistence] Failed to checkpoint confirmed terminal close WAL:', error)
     }
   }
 
@@ -3511,8 +3605,7 @@ export class Store {
       this.writeTimer = null
       this.firstPendingSaveAt = null
       // Why (issue #1158): serialize async writes so backup rotation can't race two callers over the same paths.
-      const prev = this.pendingWrite ?? Promise.resolve()
-      const next = prev
+      const next = this.primaryWriteTail
         .then(() => this.writeToDiskAsync())
         .catch((err) => {
           console.error('[persistence] Failed to write state:', err)
@@ -3522,12 +3615,18 @@ export class Store {
             this.pendingWrite = null
           }
         })
+      this.primaryWriteTail = next
       this.pendingWrite = next
     }, delay)
   }
 
   /** Wait for any in-flight async disk write to complete. Used in tests. */
   async waitForPendingWrite(): Promise<void> {
+    if (this.terminalCloseCheckpointTimer) {
+      clearTimeout(this.terminalCloseCheckpointTimer)
+      this.terminalCloseCheckpointTimer = null
+      this.queueTerminalExplicitCloseWalCheckpoint()
+    }
     await Promise.all([this.pendingWrite, this.activeViewPreference.waitForPendingWrite()])
   }
 
@@ -3640,7 +3739,7 @@ export class Store {
   }
 
   // Why: sync variant only for flush() at shutdown, where the process may exit before an async write completes.
-  private writeToDiskSync(opts: { force?: boolean } = {}): void {
+  private writeToDiskSync(opts: { force?: boolean; durable?: boolean } = {}): void {
     if (this.writesFrozen) {
       return
     }
@@ -3659,9 +3758,27 @@ export class Store {
     // Why: on any write/rename failure, remove the tmp file so shutdown crashes don't leak orphans.
     let renamed = false
     try {
-      writeFileSync(tmpFile, payload, 'utf-8')
+      if (opts.durable) {
+        const tmpFd = openSync(tmpFile, 'w')
+        try {
+          writeFileSync(tmpFd, payload, 'utf-8')
+          fsyncSync(tmpFd)
+        } finally {
+          closeSync(tmpFd)
+        }
+      } else {
+        writeFileSync(tmpFile, payload, 'utf-8')
+      }
       renameSync(tmpFile, dataFile)
       renamed = true
+      if (opts.durable && process.platform !== 'win32') {
+        const dirFd = openSync(dir, 'r')
+        try {
+          fsyncSync(dirFd)
+        } finally {
+          closeSync(dirFd)
+        }
+      }
       this.lastWrittenStateHash = stateHash
     } finally {
       if (!renamed) {
@@ -5611,6 +5728,142 @@ export class Store {
     this.setHostWorkspaceSession(resolved, session)
   }
 
+  setTerminalExplicitCloseOperation(
+    operation: TerminalExplicitCloseOperation,
+    hostId?: string | null
+  ): void {
+    const resolved = this.resolveHostId(hostId)
+    this.terminalExplicitCloseWal.setActive(resolved, operation)
+    const session = this.getWorkspaceSession(resolved)
+    const next = {
+      ...session,
+      terminalExplicitCloseOperationsById: {
+        ...session.terminalExplicitCloseOperationsById,
+        [operation.id]: operation
+      }
+    }
+    if (resolved === LOCAL_EXECUTION_HOST_ID) {
+      this.state.workspaceSession = next
+    } else {
+      this.state.workspaceSessionsByHostId = {
+        ...this.state.workspaceSessionsByHostId,
+        [resolved]: next
+      }
+    }
+    this.scheduleSave()
+  }
+
+  completeTerminalExplicitCloseOperation(
+    operation: TerminalExplicitCloseOperation,
+    retiredSurfaces: readonly TerminalExplicitCloseOperation['surfaces'][number][],
+    hostId?: string | null
+  ): TerminalExplicitCloseOperation['surfaces'] {
+    const resolved = this.resolveHostId(hostId)
+    let nextSession = this.getWorkspaceSession(resolved)
+    const persisted: TerminalExplicitCloseOperation['surfaces'] = []
+    for (const surface of retiredSurfaces) {
+      const candidate = retireTerminalSurfaceFromPersistence(nextSession, {
+        worktreeId: operation.worktreeId,
+        parentTabId: operation.parentTabId,
+        leafId: surface.leafId,
+        ptyId: surface.ptyId,
+        ...(surface.incarnationId ? { incarnationId: surface.incarnationId } : {})
+      })
+      if (candidate !== nextSession) {
+        persisted.push(surface)
+        nextSession = candidate
+      }
+    }
+    const repoId = getRepoIdFromWorktreeId(operation.worktreeId)
+    const topologyRevision = nextSession.terminalTopologyRevisionByRepoId?.[repoId] ?? 0
+    // Why: confirmation must reach the dedicated WAL before the mirror can forget this surface.
+    this.terminalExplicitCloseWal.setConfirmed(resolved, operation, persisted, topologyRevision)
+    this.setWorkspaceSession(nextSession, resolved)
+    const accepted = this.getWorkspaceSession(resolved)
+    const terminalExplicitCloseOperationsById = {
+      ...accepted.terminalExplicitCloseOperationsById
+    }
+    delete terminalExplicitCloseOperationsById[operation.id]
+    const completed = {
+      ...accepted,
+      terminalExplicitCloseOperationsById:
+        Object.keys(terminalExplicitCloseOperationsById).length > 0
+          ? terminalExplicitCloseOperationsById
+          : undefined
+    }
+    if (resolved === LOCAL_EXECUTION_HOST_ID) {
+      this.state.workspaceSession = completed
+    } else {
+      this.state.workspaceSessionsByHostId = {
+        ...this.state.workspaceSessionsByHostId,
+        [resolved]: completed
+      }
+    }
+    this.scheduleSave()
+    this.scheduleTerminalExplicitCloseWalCheckpoint()
+    return persisted
+  }
+
+  private scheduleTerminalExplicitCloseWalCheckpoint(): void {
+    if (this.terminalCloseCheckpointTimer) {
+      return
+    }
+    // Why: bulk tab closes keep their WAL records durable while sharing one primary fsync/compaction.
+    this.terminalCloseCheckpointTimer = setTimeout(() => {
+      this.terminalCloseCheckpointTimer = null
+      this.queueTerminalExplicitCloseWalCheckpoint()
+    }, 100)
+  }
+
+  private queueTerminalExplicitCloseWalCheckpoint(): void {
+    const checkpoint = this.primaryWriteTail
+      .then(() => {
+        if (!this.terminalExplicitCloseWal.hasConfirmed()) {
+          return
+        }
+        // Why: sharing the primary-writer tail prevents an older async rename from landing after this checkpoint.
+        this.writeToDiskSync({ force: true, durable: true })
+        this.terminalExplicitCloseWal.compactConfirmed()
+      })
+      .catch((error) => {
+        console.error('[persistence] Failed to checkpoint terminal close WAL:', error)
+      })
+      .finally(() => {
+        if (this.pendingWrite === checkpoint) {
+          this.pendingWrite = null
+        }
+      })
+    this.primaryWriteTail = checkpoint
+    this.pendingWrite = checkpoint
+  }
+
+  private applyConfirmedTerminalExplicitCloseRetirements(
+    hostId: string,
+    session: WorkspaceSessionState
+  ): WorkspaceSessionState {
+    let next = session
+    for (const candidate of this.terminalExplicitCloseWal.entries()) {
+      if (candidate.hostId !== hostId || candidate.entry.phase !== 'confirmed') {
+        continue
+      }
+      const repoId = getRepoIdFromWorktreeId(candidate.entry.operation.worktreeId)
+      const currentRevision = next.terminalTopologyRevisionByRepoId?.[repoId] ?? 0
+      if (currentRevision >= candidate.entry.topologyRevision) {
+        continue
+      }
+      for (const surface of candidate.entry.retiredSurfaces) {
+        next = retireTerminalSurfaceFromPersistence(next, {
+          worktreeId: candidate.entry.operation.worktreeId,
+          parentTabId: candidate.entry.operation.parentTabId,
+          leafId: surface.leafId,
+          ptyId: surface.ptyId,
+          ...(surface.incarnationId ? { incarnationId: surface.incarnationId } : {})
+        })
+      }
+    }
+    return next
+  }
+
   /** Persist a non-'local' host partition; remote hosts skip setLocalWorkspaceSession's local-daemon PTY-binding race guards. */
   private setHostWorkspaceSession(hostId: ExecutionHostId, session: WorkspaceSessionState): void {
     // Why: each partition owns its topology fence; renderer writes omit it and must rebase locally.
@@ -5618,6 +5871,7 @@ export class Store {
       session,
       this.state.workspaceSessionsByHostId?.[hostId]
     )
+    session = this.applyConfirmedTerminalExplicitCloseRetirements(hostId, session)
     const pruned = pruneWorkspaceSessionBrowserHistory(
       pruneLocalTerminalScrollbackBuffers(session, this.state.repos)
     )
@@ -5631,6 +5885,7 @@ export class Store {
   private setLocalWorkspaceSession(session: PersistedState['workspaceSession']): void {
     const prior = this.state.workspaceSession
     session = sanitizeWorkspaceSessionTerminalRetirements(session, prior)
+    session = this.applyConfirmedTerminalExplicitCloseRetirements(LOCAL_EXECUTION_HOST_ID, session)
     session = pruneWorkspaceSessionBrowserHistory(
       pruneLocalTerminalScrollbackBuffers(session, this.state.repos)
     )

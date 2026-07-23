@@ -21,6 +21,10 @@ import {
 } from '../terminal-history'
 import type { IPtyProvider, PtyProcessInfo, PtySpawnOptions, PtySpawnResult } from './types'
 import {
+  assertPtyShutdownActive,
+  type PtyShutdownOptions
+} from '../../shared/pty-shutdown-authority'
+import {
   ensureNodePtySpawnHelperExecutable,
   validateWorkingDirectory,
   spawnShellWithFallback
@@ -1035,6 +1039,9 @@ export class LocalPtyProvider implements IPtyProvider {
 
   // Local PTYs are always attached -- no-op. Remote providers use this to resubscribe.
   async attach(_id: string): Promise<void> {}
+  supportsIncarnationBoundShutdown(): boolean {
+    return true
+  }
   hasPty(id: string): boolean {
     return ptyProcesses.has(id)
   }
@@ -1071,10 +1078,15 @@ export class LocalPtyProvider implements IPtyProvider {
     return { cols: proc.cols, rows: proc.rows }
   }
 
-  async shutdown(id: string, opts: { immediate?: boolean; keepHistory?: boolean }): Promise<void> {
+  async shutdown(id: string, opts: PtyShutdownOptions): Promise<void> {
+    assertPtyShutdownActive(opts)
+    if (opts.expectedIncarnationId && ptyIncarnations.get(id) !== opts.expectedIncarnationId) {
+      throw new Error('pty_incarnation_stale')
+    }
     cancelPendingLocalPtySpawns(id)
     const pending = ptyShutdownOperations.get(id)
     if (pending) {
+      assertPtyShutdownActive(opts)
       if (opts.immediate === true) {
         pending.immediate = true
         if (pending.rootSignalled && ptyProcesses.get(id) === pending.proc) {
@@ -1094,7 +1106,7 @@ export class LocalPtyProvider implements IPtyProvider {
       rootSignalled: false,
       proc
     }
-    entry.promise = this.shutdownTrackedPty(id, proc, entry)
+    entry.promise = this.shutdownTrackedPty(id, proc, entry, opts)
     ptyShutdownOperations.set(id, entry)
     try {
       await entry.promise
@@ -1108,13 +1120,15 @@ export class LocalPtyProvider implements IPtyProvider {
   private async shutdownTrackedPty(
     id: string,
     proc: pty.IPty,
-    operation: PtyShutdownOperation
+    operation: PtyShutdownOperation,
+    options: PtyShutdownOptions
   ): Promise<void> {
     const physicalExit = ptyPhysicalExits.get(id)
     // Why: snapshot before signaling — once the shell dies, descendants reparent to pid 1 and a ppid walk can't find them.
     const descendants = ptyAgentSessionIds.has(id)
       ? await captureDescendantSnapshot(proc.pid)
       : null
+    assertPtyShutdownActive(options)
     // Why: a natural exit can race the snapshot — never signal descendants or the root PID after this PTY loses ownership.
     if (ptyProcesses.get(id) === proc) {
       if (descendants) {

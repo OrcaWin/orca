@@ -6,6 +6,7 @@ import {
   activateWebRuntimeSessionTab,
   closeWebRuntimeTerminal,
   closeWebRuntimeSessionTab,
+  closeWebRuntimeTerminalTab,
   consumePendingWebRuntimeSplitMirrorTelemetry,
   createWebRuntimeSessionBrowserTab,
   createWebRuntimeAgentSessionTerminal,
@@ -1456,6 +1457,90 @@ describe('web runtime session tab actions', () => {
       timeoutMs: 15_000
     })
     expect(mocks.applyFreshWebSessionTabsSnapshot).toHaveBeenCalled()
+  })
+
+  it('closes a remote terminal tab through its generation-bound handle', async () => {
+    const runtimeCall = vi
+      .fn()
+      .mockResolvedValueOnce({ id: 'close', ok: true, result: { close: {} } })
+      .mockResolvedValueOnce({ id: 'list', ok: true, result: makeSnapshot() })
+    vi.stubGlobal('window', { api: { runtimeEnvironments: { call: runtimeCall } } })
+
+    await expect(
+      closeWebRuntimeTerminalTab({
+        environmentId: ENVIRONMENT_ID,
+        worktreeId: WORKTREE_ID,
+        tabId: 'host-terminal-tab',
+        terminal: 'term-close-generation-2'
+      })
+    ).resolves.toBe(true)
+
+    expect(runtimeCall).toHaveBeenNthCalledWith(1, {
+      selector: ENVIRONMENT_ID,
+      method: 'terminal.closeTab',
+      params: { terminal: 'term-close-generation-2' },
+      timeoutMs: 60_000,
+      expectedEnvironmentPairingRevision: undefined
+    })
+    expect(runtimeCall).not.toHaveBeenCalledWith(
+      expect.objectContaining({ method: 'session.tabs.close' })
+    )
+  })
+
+  it('fails closed when a generation-bound method disappears after publication', async () => {
+    const runtimeCall = vi
+      .fn()
+      .mockResolvedValueOnce({
+        id: 'close',
+        ok: false,
+        error: { code: 'method_not_found', message: 'Unknown method: terminal.closeTab' }
+      })
+      .mockResolvedValueOnce({ id: 'list', ok: true, result: makeSnapshot() })
+    vi.stubGlobal('window', { api: { runtimeEnvironments: { call: runtimeCall } } })
+
+    await expect(
+      closeWebRuntimeTerminalTab({
+        environmentId: ENVIRONMENT_ID,
+        worktreeId: WORKTREE_ID,
+        tabId: 'host-terminal-tab',
+        terminal: 'term-legacy'
+      })
+    ).resolves.toBe(false)
+
+    expect(runtimeCall).not.toHaveBeenCalledWith(
+      expect.objectContaining({ method: 'session.tabs.close' })
+    )
+  })
+
+  it.each([
+    'terminal_handle_stale',
+    'timeout',
+    'client_disconnected',
+    'forbidden',
+    'invalid_params'
+  ])('never falls back after %s', async (code) => {
+    const runtimeCall = vi
+      .fn()
+      .mockResolvedValueOnce({ id: 'close', ok: false, error: { code, message: code } })
+      .mockResolvedValueOnce({ id: 'list', ok: true, result: makeSnapshot() })
+    vi.stubGlobal('window', { api: { runtimeEnvironments: { call: runtimeCall } } })
+
+    await expect(
+      closeWebRuntimeTerminalTab({
+        environmentId: ENVIRONMENT_ID,
+        worktreeId: WORKTREE_ID,
+        tabId: 'host-terminal-tab',
+        terminal: 'term-stale'
+      })
+    ).resolves.toBe(false)
+
+    expect(runtimeCall).not.toHaveBeenCalledWith(
+      expect.objectContaining({ method: 'session.tabs.close' })
+    )
+    expect(mocks.acceptReplayedWebSessionTabsSnapshot).toHaveBeenCalledWith(
+      ENVIRONMENT_ID,
+      WORKTREE_ID
+    )
   })
 
   it('sends lifecycle and explicit user close reasons on the wire', async () => {

@@ -3,12 +3,15 @@ import { TOGGLE_TERMINAL_PANE_EXPAND_EVENT } from '@/constants/terminal'
 import {
   activateWebRuntimeSessionTab,
   closeWebRuntimeSessionTab,
+  closeWebRuntimeTerminalTab,
   isWebRuntimeSessionActive,
   toHostSessionTabId
 } from '@/runtime/web-runtime-session'
 import {
   getLatestWebSessionTabsPublicationEpoch,
-  resolveHostSessionTabIdForWebSessionTab
+  queueProvisionalHostTerminalClose,
+  resolveHostSessionTabIdForWebSessionTab,
+  resolveHostTerminalCloseAuthorityForWebSessionTab
 } from '@/runtime/web-session-tabs-sync'
 import { resolveTerminalWorktreeRoute } from '@/lib/terminal-worktree-route'
 import { guardPinnedTabClose, resolvePinnedTabLabel } from '@/store/pinned-tab-close-guard'
@@ -24,8 +27,19 @@ import {
   validatePrecomputedTerminalCloseState,
   type PrecomputedTerminalCloseState
 } from './terminal-close-target'
+import {
+  closeOtherTerminalTabsWith,
+  closeTerminalTabsToRightWith
+} from './terminal-tab-bulk-actions'
 export type { PrecomputedTerminalCloseState } from './terminal-close-target'
-export { closeOtherTerminalTabs, closeTerminalTabsToRight } from './terminal-tab-bulk-actions'
+
+export function closeOtherTerminalTabs(tabId: string, activeWorktreeId: string | null): void {
+  closeOtherTerminalTabsWith(tabId, activeWorktreeId, closeTerminalTab)
+}
+
+export function closeTerminalTabsToRight(tabId: string, activeWorktreeId: string | null): void {
+  closeTerminalTabsToRightWith(tabId, activeWorktreeId, closeTerminalTab)
+}
 
 type TerminalTabActionState = ReturnType<typeof useAppStore.getState>
 
@@ -123,6 +137,29 @@ export function closeTerminalTab(
         tabId: terminalTabId
       }) ?? toHostSessionTabId(terminalTabId)
     const wireReason = options?.reason ?? options?.hostCloseReason ?? 'user'
+    const closeAuthority = resolveHostTerminalCloseAuthorityForWebSessionTab({
+      environmentId: runtimeEnvironmentId,
+      worktreeId: owningWorktreeId,
+      tabId: terminalTabId
+    })
+    if (wireReason === 'user' && !closeAuthority) {
+      if (
+        queueProvisionalHostTerminalClose(
+          {
+            environmentId: runtimeEnvironmentId,
+            worktreeId: owningWorktreeId,
+            tabId: terminalTabId
+          },
+          (canonicalTabId) => closeTerminalTab(canonicalTabId, options),
+          () => options?.onCancel?.()
+        )
+      ) {
+        return
+      }
+      // Why: a mutable tab id is unsafe authority when this mirror has no current host generation.
+      options?.onCancel?.()
+      return
+    }
     const lifecycleTerminalHandle =
       wireReason === 'user'
         ? null
@@ -146,20 +183,35 @@ export function closeTerminalTab(
         ? { precomputedRetirementPlan: options.precomputedRetirementPlan }
         : {})
     })
-    void closeWebRuntimeSessionTab({
-      worktreeId: owningWorktreeId,
-      tabId: hostBackedTabId,
-      environmentId: runtimeEnvironmentId,
-      // Why: lifecycle evidence binds this stale-prone echo to the exact host
-      // publication and terminal incarnation that the renderer observed.
-      reason: wireReason,
-      ...(wireReason !== 'user'
-        ? {
-            publicationEpoch,
-            terminalHandle: lifecycleTerminalHandle
-          }
-        : {})
-    })
+    if (wireReason === 'user') {
+      if (closeAuthority!.kind === 'generation-bound') {
+        void closeWebRuntimeTerminalTab({
+          worktreeId: owningWorktreeId,
+          tabId: hostBackedTabId,
+          environmentId: runtimeEnvironmentId,
+          terminal: closeAuthority!.handle
+        })
+      } else {
+        // Why: an old host published no generation authority; preserve its existing tab-id close behavior.
+        void closeWebRuntimeSessionTab({
+          worktreeId: owningWorktreeId,
+          tabId: hostBackedTabId,
+          environmentId: runtimeEnvironmentId,
+          reason: 'user'
+        })
+      }
+    } else {
+      void closeWebRuntimeSessionTab({
+        worktreeId: owningWorktreeId,
+        tabId: hostBackedTabId,
+        environmentId: runtimeEnvironmentId,
+        // Why: lifecycle evidence binds this stale-prone echo to the exact host
+        // publication and terminal incarnation that the renderer observed.
+        reason: wireReason,
+        publicationEpoch,
+        terminalHandle: lifecycleTerminalHandle
+      })
+    }
     options?.onClosed?.()
     return
   }
