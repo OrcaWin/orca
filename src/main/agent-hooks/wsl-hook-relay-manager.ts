@@ -3,14 +3,12 @@
 // spawn, forwarding envelopes into ingestRemote and installing guest hooks.
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 
-import { installWslGuestHooks } from './wsl-hook-fs-adapter'
 import { buildWslRelaySpawnEnv, launchWslRelayWithInstall } from './wsl-hook-relay-launch'
 import {
   defaultWslHookRelayDeps,
   FAILURE_COOLDOWN_BASE_MS,
   FAILURE_COOLDOWN_MAX_MS,
   NO_NODE_COOLDOWN_MS,
-  REINSTALL_MIN_INTERVAL_MS,
   REINSTALL_ONE_SHOT_DELAY_MS,
   RUNNING_TEARDOWN_COOLDOWN_MS,
   STABLE_UPTIME_MS,
@@ -18,7 +16,7 @@ import {
 } from './wsl-hook-relay-deps'
 import { wireWslRelayLink } from './wsl-hook-relay-link'
 import { WslRelayRecovery } from './wsl-hook-relay-recovery'
-import { requestGuestOpenCodeOverlayDir } from './wsl-guest-plugin-install'
+import { WslGuestInstallCycle } from './wsl-guest-install-cycle'
 import { SshChannelMultiplexer, type MultiplexerTransport } from '../ssh/ssh-channel-multiplexer'
 import { AGENT_HOOK_REQUEST_REPLAY_METHOD } from '../../shared/agent-hook-relay'
 import {
@@ -35,13 +33,11 @@ type DistroState = {
   mux?: SshChannelMultiplexer
   guestHome?: string
   guestEndpointFilePath?: string
-  opencodeOverlayDir?: string
   failures: number
   cooldownUntil: number
   connectedAt?: number
   restartTimer?: ReturnType<typeof setTimeout>
   reinstallTimer?: ReturnType<typeof setTimeout>
-  lastInstallAt?: number
 }
 
 function distroKey(distro: string): string {
@@ -52,12 +48,14 @@ export class WslHookRelayManager {
   private deps: WslHookRelayManagerDeps
   private recovery: WslRelayRecovery
   private states = new Map<string, DistroState>()
+  private installCycle: WslGuestInstallCycle
   private defaultDistro: string | null = null
   private disposed = false
   private warnedBundleMissing = false
 
   constructor(deps: Partial<WslHookRelayManagerDeps> = {}) {
     this.deps = { ...defaultWslHookRelayDeps, ...deps }
+    this.installCycle = new WslGuestInstallCycle(this.deps)
     this.recovery = new WslRelayRecovery({
       isDistroRunning: (distro) => this.deps.isDistroRunning(distro),
       warn: (message) => this.deps.warn(message),
@@ -87,9 +85,13 @@ export class WslHookRelayManager {
     })
   }
 
+  /** Empty key never matches a real (non-empty) distro. */
+  private keyFor(distro: string | null): string {
+    return distroKey(distro ?? this.defaultDistro ?? '')
+  }
+
   private stateFor(distro: string | null): DistroState | undefined {
-    // Empty key never matches a real (non-empty) distro state.
-    return this.states.get(distroKey(distro ?? this.defaultDistro ?? ''))
+    return this.states.get(this.keyFor(distro))
   }
 
   /** Guest endpoint file path once known; null before first connect
@@ -102,7 +104,35 @@ export class WslHookRelayManager {
    *  null before then (older bundle / relay not yet connected). Callers drop
    *  OPENCODE_CONFIG_DIR while null so no Windows overlay path crosses into WSL. */
   getOpenCodeOverlayDir(distro: string | null): string | null {
-    return this.stateFor(distro)?.opencodeOverlayDir ?? null
+    return this.installCycle.overlayDir(this.keyFor(distro))
+  }
+
+  /** Bounded wait for the guest overlay dir, for a spawn that races relay startup.
+   *  ensureForDistro is fire-and-forget and a pane's env is frozen at spawn, so without
+   *  this the FIRST OpenCode pane on a distro reports no status for its whole life while
+   *  every later pane works. Resolves the moment the answer is known — or is knowable
+   *  only after this spawn — so no spawn blocks for longer than it can benefit from. */
+  async waitForOpenCodeOverlayDir(
+    distro: string | null,
+    timeoutMs: number
+  ): Promise<string | null> {
+    // Why: resolve the name BEFORE ensuring. ensureInternal awaits its own default-distro
+    // lookup, and a spawn parked after that await can miss the report it parked for. The
+    // serving check gates that lookup too — it shells out to `wsl.exe -l`.
+    const serving = this.deps.platform() === 'win32' && this.deps.remoteHooksEnabled()
+    const resolved = serving ? (distro ?? (await this.resolveDefaultDistro())) : null
+    if (!resolved || this.disposed) {
+      return null
+    }
+    this.ensureForDistro(resolved)
+    // ensureInternal runs synchronously up to the relay launch, so the state now reads its
+    // verdict: no state means no relay can start (no bundle / no hook coordinates) and any
+    // phase but 'starting' has already reported. Neither becomes truer by blocking a spawn.
+    const key = distroKey(resolved)
+    const recorded = this.installCycle.overlayDir(key)
+    return recorded !== null || this.states.get(key)?.phase !== 'starting'
+      ? recorded
+      : this.installCycle.park(key, timeoutMs)
   }
 
   disposeAll(): void {
@@ -113,6 +143,7 @@ export class WslHookRelayManager {
       state.child?.kill()
     }
     this.states.clear()
+    this.installCycle.releaseAll()
   }
 
   private async ensureInternal(requestedDistro: string | null): Promise<void> {
@@ -155,9 +186,6 @@ export class WslHookRelayManager {
       distro,
       phase: 'starting',
       failures: existing?.failures ?? 0,
-      // Why: instance-keyed and on the distro's persistent fs, so it outlives a relay
-      // crash — dropping it would blank status on panes spawned mid-relaunch.
-      opencodeOverlayDir: existing?.opencodeOverlayDir,
       cooldownUntil: 0
     }
     this.states.set(key, state)
@@ -251,7 +279,13 @@ export class WslHookRelayManager {
     }
     state.guestHome = homeResult.home
     state.guestEndpointFilePath = wslHookRelayEndpointFilePath(homeResult.home, instanceKey)
-    await this.runInstallers(state, mux, homeResult.home)
+    await this.installCycle.run({
+      key: distroKey(state.distro),
+      distro: state.distro,
+      mux,
+      guestHome: homeResult.home,
+      isCurrent: () => state.mux === mux
+    })
 
     if (state.phase === 'failed' || state.mux !== mux) {
       // Child died while installing — already recorded; don't revive.
@@ -269,48 +303,20 @@ export class WslHookRelayManager {
     })
   }
 
-  private async runInstallers(
-    state: DistroState,
-    mux: SshChannelMultiplexer,
-    guestHome: string
-  ): Promise<void> {
-    state.lastInstallAt = Date.now()
-    await installWslGuestHooks({
-      mux,
-      guestHome,
-      distro: state.distro,
-      installHooks: this.deps.installHooks,
-      warn: this.deps.warn
-    })
-    // Why: ship OpenCode's status plugin and record the guest overlay dir the
-    // PTY env points OPENCODE_CONFIG_DIR at; identity-guarded against teardown.
-    const overlay = await requestGuestOpenCodeOverlayDir(mux, this.deps, state.distro)
-    if (state.mux === mux && overlay.kind !== 'unavailable') {
-      // Clearing on 'none' matters: a rebuild that failed after wiping leaves the dir
-      // present but plugin-less, and advertising it would hide the user's own config.
-      state.opencodeOverlayDir = overlay.kind === 'dir' ? overlay.dir : undefined
-    }
-  }
-
-  private async maybeReinstallHooks(state: DistroState): Promise<void> {
+  private maybeReinstallHooks(state: DistroState): Promise<void> {
     const mux = state.mux
     const guestHome = state.guestHome
-    if (
-      !mux ||
-      !guestHome ||
-      mux.isDisposed() ||
-      Date.now() - (state.lastInstallAt ?? 0) < REINSTALL_MIN_INTERVAL_MS
-    ) {
-      return
-    }
-    try {
-      // Why: runInstallers also re-ships the plugin source so a mid-session Orca upgrade refreshes it.
-      await this.runInstallers(state, mux, guestHome)
-    } catch (err) {
-      this.deps.warn(
-        `[agent-hooks] WSL hook reinstall for '${state.distro}' failed: ${err instanceof Error ? err.message : String(err)}`
-      )
-    }
+    return this.installCycle.maybeRepeat(
+      mux && guestHome
+        ? {
+            key: distroKey(state.distro),
+            distro: state.distro,
+            mux,
+            guestHome,
+            isCurrent: () => state.mux === mux
+          }
+        : null
+    )
   }
 
   /** Records + breadcrumbs the failure and always arms the restart timer —
@@ -332,6 +338,9 @@ export class WslHookRelayManager {
     state.cooldownUntil =
       Date.now() + Math.min(options.cooldownBaseMs * state.failures, FAILURE_COOLDOWN_MAX_MS)
     this.deps.warn(`[agent-hooks] WSL hook relay (${state.distro}): ${message}`)
+    // Why: the restart is a cooldown away — far past this spawn. Release parked spawns
+    // now (with any dir carried over from a previous run) instead of stalling them.
+    this.installCycle.release(distroKey(state.distro))
     this.recovery.scheduleRestart(state)
   }
 

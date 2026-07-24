@@ -2866,6 +2866,68 @@ describe('registerPtyHandlers', () => {
         }
       })
 
+      it('waits for the guest overlay before a WSL OpenCode launch freezes its env', async () => {
+        const guestDir = '/home/jin/.orca-relay/opencode-overlays/race'
+        // The relay reports only once the spawn parks on it — that is the first-pane race.
+        let reported: string | null = null
+        const read = vi
+          .spyOn(wslHookRelayManager, 'getOpenCodeOverlayDir')
+          .mockImplementation(() => reported)
+        const wait = vi
+          .spyOn(wslHookRelayManager, 'waitForOpenCodeOverlayDir')
+          .mockImplementation(async () => {
+            reported = guestDir
+            return guestDir
+          })
+        try {
+          await withWin32Platform(async () => {
+            const env = await daemonSpawnAndGetEnv({}, undefined, undefined, undefined, {
+              shellOverride: 'wsl.exe',
+              launchAgent: 'opencode'
+            })
+            expect(wait).toHaveBeenCalledTimes(1)
+            expect(env.OPENCODE_CONFIG_DIR).toBe(guestDir)
+            expect(env.ORCA_OPENCODE_CONFIG_DIR).toBe(guestDir)
+          })
+        } finally {
+          wait.mockRestore()
+          read.mockRestore()
+        }
+      })
+
+      it('waits when only the launch command names OpenCode', async () => {
+        const wait = vi
+          .spyOn(wslHookRelayManager, 'waitForOpenCodeOverlayDir')
+          .mockResolvedValue(null)
+        try {
+          await withWin32Platform(async () => {
+            await daemonSpawnAndGetEnv({}, undefined, undefined, undefined, {
+              shellOverride: 'wsl.exe',
+              command: 'opencode --continue'
+            })
+          })
+          expect(wait).toHaveBeenCalledTimes(1)
+        } finally {
+          wait.mockRestore()
+        }
+      })
+
+      // Why: every WSL spawn already kicks the relay off, so charging plain terminals
+      // the handshake would tax terminal-open latency for a plugin only OpenCode reads.
+      it('does not make a plain WSL shell wait on the guest overlay', async () => {
+        const wait = vi.spyOn(wslHookRelayManager, 'waitForOpenCodeOverlayDir')
+        try {
+          await withWin32Platform(async () => {
+            await daemonSpawnAndGetEnv({}, undefined, undefined, undefined, {
+              shellOverride: 'wsl.exe'
+            })
+          })
+          expect(wait).not.toHaveBeenCalled()
+        } finally {
+          wait.mockRestore()
+        }
+      })
+
       it('strips the daemon-inherited Orca-owned CODEX_HOME for real-home routing', async () => {
         const spawnOptions = await daemonSpawnAndGetOptions(
           {},

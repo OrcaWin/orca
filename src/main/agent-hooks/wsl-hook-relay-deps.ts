@@ -43,6 +43,11 @@ export const STABLE_UPTIME_MS = 2 * 60_000
 // once that file exists. The one-shot timer covers single-spawn sessions.
 export const REINSTALL_MIN_INTERVAL_MS = 30_000
 export const REINSTALL_ONE_SHOT_DELAY_MS = 60_000
+// Why: an OpenCode pane that spawns before the guest overlay exists reports no status
+// for its whole life, so it is worth waiting out a warm distro's relay handshake. Only
+// a spawn that actually launches OpenCode pays it, and only until the first report;
+// past this a cold or relay-less distro degrades to no status rather than stalling.
+export const OPENCODE_OVERLAY_SPAWN_WAIT_MS = 5_000
 
 export type WslHookRelayManagerDeps = {
   platform: () => NodeJS.Platform

@@ -260,6 +260,98 @@ describe('WslHookRelayManager', () => {
     manager.disposeAll()
   })
 
+  it('keeps the recorded overlay dir across a relay relaunch', async () => {
+    const children: ReturnType<typeof fakeChild>[] = []
+    const spawnRelay = vi.fn(() => {
+      const child = fakeChild()
+      children.push(child)
+      return child
+    })
+    const { manager, deps } = createManager({ spawnRelay })
+    manager.ensureForDistro('Ubuntu')
+    await vi.waitFor(() => expect(manager.getOpenCodeOverlayDir('Ubuntu')).toBe(opencodeOverlayDir))
+
+    children[0].emitClose()
+    await vi.waitFor(() =>
+      expect(deps.warn).toHaveBeenCalledWith(expect.stringContaining('exited'))
+    )
+    // Instance-keyed and on the distro's persistent fs, so it outlives the relay —
+    // dropping it would blank status on panes spawned mid-relaunch.
+    expect(manager.getOpenCodeOverlayDir('Ubuntu')).toBe(opencodeOverlayDir)
+    manager.disposeAll()
+  })
+
+  // The first pane on a distro spawns while the relay is still connecting. Its env is
+  // frozen at spawn, so anything it misses here it never reports for its whole life.
+  describe('first-pane overlay wait', () => {
+    it('parks the racing spawn until the guest reports the overlay dir', async () => {
+      let releaseSentinel: ((transport: MultiplexerTransport) => void) | undefined
+      const waitForSentinel = vi.fn(
+        () =>
+          new Promise<MultiplexerTransport>((resolve) => {
+            releaseSentinel = resolve
+          })
+      )
+      const { manager } = createManager({ waitForSentinel })
+
+      const pending = manager.waitForOpenCodeOverlayDir('Ubuntu', 60_000)
+      // Pre-fix, this is exactly what the spawn read — and it dropped OPENCODE_CONFIG_DIR.
+      expect(manager.getOpenCodeOverlayDir('Ubuntu')).toBeNull()
+
+      await vi.waitFor(() => expect(releaseSentinel).toBeDefined())
+      releaseSentinel?.(guestTransport())
+      await expect(pending).resolves.toBe(opencodeOverlayDir)
+      manager.disposeAll()
+    })
+
+    it('resolves the default distro before parking so an unnamed distro is not missed', async () => {
+      const { manager } = createManager({})
+      await expect(manager.waitForOpenCodeOverlayDir(null, 60_000)).resolves.toBe(
+        opencodeOverlayDir
+      )
+      manager.disposeAll()
+    })
+
+    it('returns the recorded dir without parking once the relay has reported', async () => {
+      const { manager } = createManager({})
+      manager.ensureForDistro('Ubuntu')
+      await vi.waitFor(() =>
+        expect(manager.getOpenCodeOverlayDir('Ubuntu')).toBe(opencodeOverlayDir)
+      )
+      // Zero budget: a later spawn must never pay for the first one's race.
+      await expect(manager.waitForOpenCodeOverlayDir('Ubuntu', 0)).resolves.toBe(opencodeOverlayDir)
+      manager.disposeAll()
+    })
+
+    it('does not park when no relay can start at all', async () => {
+      const { manager, deps } = createManager({ resolveBundle: () => null })
+      await expect(manager.waitForOpenCodeOverlayDir('Ubuntu', 60_000)).resolves.toBeNull()
+      expect(deps.spawnRelay).not.toHaveBeenCalled()
+    })
+
+    it('releases the parked spawn when the relay dies instead of waiting out the timeout', async () => {
+      const waitForSentinel = vi.fn().mockRejectedValue(startupError(43))
+      const { manager } = createManager({ waitForSentinel })
+      await expect(manager.waitForOpenCodeOverlayDir('Ubuntu', 60_000)).resolves.toBeNull()
+      manager.disposeAll()
+    })
+
+    it('releases the parked spawn when the guest bundle lacks the plugin handler', async () => {
+      const waitForSentinel = vi.fn(async () => guestTransport(false))
+      const { manager } = createManager({ waitForSentinel })
+      await expect(manager.waitForOpenCodeOverlayDir('Ubuntu', 60_000)).resolves.toBeNull()
+      manager.disposeAll()
+    })
+
+    it('releases parked spawns on dispose', async () => {
+      const waitForSentinel = vi.fn(() => new Promise<MultiplexerTransport>(() => {}))
+      const { manager } = createManager({ waitForSentinel })
+      const pending = manager.waitForOpenCodeOverlayDir('Ubuntu', 60_000)
+      manager.disposeAll()
+      await expect(pending).resolves.toBeNull()
+    })
+  })
+
   it('leaves the overlay dir null when the guest bundle lacks the installPlugins handler', async () => {
     const waitForSentinel = vi.fn(async () => guestTransport(false))
     const { manager, deps } = createManager({ waitForSentinel })
@@ -357,6 +449,11 @@ describe('WslHookRelayManager', () => {
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(offPlatform.deps.spawnRelay).not.toHaveBeenCalled()
     expect(disabled.deps.spawnRelay).not.toHaveBeenCalled()
+    // A spawn must never park on a relay that is switched off.
+    await expect(
+      offPlatform.manager.waitForOpenCodeOverlayDir('Ubuntu', 60_000)
+    ).resolves.toBeNull()
+    await expect(disabled.manager.waitForOpenCodeOverlayDir('Ubuntu', 60_000)).resolves.toBeNull()
   })
 
   it('requires WSL fs-bridge home coordinates before exposing an endpoint path', () => {

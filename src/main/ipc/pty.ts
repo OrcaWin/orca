@@ -52,6 +52,7 @@ import {
 } from '../../shared/command-token-scanner'
 import { agentHookServer } from '../agent-hooks/server'
 import { wslHookRelayManager } from '../agent-hooks/wsl-hook-relay-manager'
+import { OPENCODE_OVERLAY_SPAWN_WAIT_MS } from '../agent-hooks/wsl-hook-relay-deps'
 import { isAgentStatusHooksEnabled } from '../agent-hooks/managed-agent-hook-controls'
 import { piTitlebarExtensionService } from '../pi/titlebar-extension-service'
 import { detectPiAgentKindFromCommand, type PiAgentKind } from '../../shared/pi-agent-kind'
@@ -798,6 +799,43 @@ function getCodexSelectionTargetForPty(
     return { runtime: 'wsl', wslDistro: wslPath?.distro ?? wslDistro ?? null }
   }
   return { runtime: 'host' }
+}
+
+function isOpenCodeLaunchCommand(launchCommand: string | undefined): boolean {
+  const binary = getCommandTokenPathBasename(getFirstCommandToken(launchCommand ?? ''))
+    .toLowerCase()
+    .replace(/\.(?:cmd|exe|sh)$/, '')
+  return binary === 'opencode'
+}
+
+/**
+ * Start the WSL relay and let it report its guest OpenCode overlay before this spawn
+ * freezes its env. Kick this off early and await it right before the env build: the
+ * relay launch is fire-and-forget, so without it the FIRST OpenCode pane on a distro
+ * builds env with no overlay and reports no status for its whole life. Bounded inside
+ * the manager, so a cold or relay-less distro degrades to that same no-status fallback
+ * instead of stalling the terminal. Never rejects.
+ *
+ * Scoped to spawns that launch OpenCode: every WSL spawn already kicks the relay off
+ * (buildPtyHostEnv), so making plain terminals wait on it too would charge every WSL
+ * user terminal-open latency for a plugin only OpenCode reads. Null (not a resolved
+ * promise) for those, so awaiting it costs them not even a microtask — spawn
+ * de-duplication reserves its pane key after the env build and is tick-sensitive.
+ */
+function warmWslOpenCodeOverlay(opts: {
+  target: CodexAccountSelectionTarget
+  agentStatusHooksEnabled: boolean
+  launchAgent: string | undefined
+  launchCommand: string | undefined
+}): Promise<unknown> | null {
+  const launchesOpenCode =
+    opts.launchAgent === 'opencode' || isOpenCodeLaunchCommand(opts.launchCommand)
+  if (!opts.agentStatusHooksEnabled || opts.target.runtime !== 'wsl' || !launchesOpenCode) {
+    return null
+  }
+  return wslHookRelayManager
+    .waitForOpenCodeOverlayDir(opts.target.wslDistro ?? null, OPENCODE_OVERLAY_SPAWN_WAIT_MS)
+    .catch(() => null)
 }
 
 function getCompatibleSelectedCodexHomePath(
@@ -2999,6 +3037,14 @@ export function registerPtyHandlers(
         cwd,
         terminalRuntimeOptions.terminalWindowsWslDistro ?? null
       )
+      // Why: started here, awaited just before the env build, so relay startup overlaps
+      // the Codex-resume and Claude-auth awaits instead of adding its own latency.
+      const wslOpenCodeOverlayReady = warmWslOpenCodeOverlay({
+        target: codexSelectionTarget,
+        agentStatusHooksEnabled: isAgentStatusHooksEnabled(getSettings?.()),
+        launchAgent: args.launchAgent,
+        launchCommand: args.command
+      })
       const codexResumePreparation = prepareCodexResumeHome({
         connectionId: args.connectionId,
         launchAgent: args.launchAgent,
@@ -3102,6 +3148,11 @@ export function registerPtyHandlers(
           skipCodexHomeEnv,
           settings: getSettings?.()
         })
+      // Why: not gated on isDaemonHostSpawn — LocalPtyProvider builds the same env inside
+      // its own spawn callback, which is synchronous and cannot wait for the overlay itself.
+      if (wslOpenCodeOverlayReady) {
+        await wslOpenCodeOverlayReady
+      }
       if (isDaemonHostSpawn && sessionId) {
         if (!isSafePtySessionId(sessionId, app.getPath('userData'))) {
           throw new Error('Invalid PTY session id')
@@ -4068,6 +4119,14 @@ export function registerPtyHandlers(
         cwd,
         terminalRuntimeOptions.terminalWindowsWslDistro ?? null
       )
+      // Why: started here, awaited just before the env build, so relay startup overlaps
+      // the Claude-auth and Agent-Teams awaits instead of adding its own latency.
+      const wslOpenCodeOverlayReady = warmWslOpenCodeOverlay({
+        target: initialSelectionTarget,
+        agentStatusHooksEnabled: isAgentStatusHooksEnabled(getSettings?.()),
+        launchAgent: isTuiAgent(args.launchAgent) ? args.launchAgent : undefined,
+        launchCommand: args.command
+      })
       const claudeAuth =
         isClaudeLaunch && prepareClaudeAuth ? await prepareClaudeAuth(initialSelectionTarget) : null
       spawnTiming.mark('auth')
@@ -4251,6 +4310,12 @@ export function registerPtyHandlers(
           skipCodexHomeEnv,
           settings: getSettings?.()
         })
+      // Why: not gated on isDaemonHostSpawn — LocalPtyProvider builds the same env inside
+      // its own spawn callback, which is synchronous and cannot wait for the overlay itself.
+      if (wslOpenCodeOverlayReady) {
+        await wslOpenCodeOverlayReady
+        spawnTiming.mark('wsl_overlay')
+      }
       if (isDaemonHostSpawn) {
         if (effectiveSessionId === undefined) {
           // Should be unreachable: effectiveSessionId is a string when isDaemonHostSpawn; defense-in-depth.
