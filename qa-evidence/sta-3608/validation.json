@@ -1,0 +1,1088 @@
+{
+  "verdict": true,
+  "workspace": {
+    "repoId": "a9e56f06-6ace-43d1-9acb-c6183d0373f5",
+    "worktreeId": "a9e56f06-6ace-43d1-9acb-c6183d0373f5::C:/Users/neil/orca/workspaces/orca/sta-3608-windows-repro",
+    "tabId": "f24eef0d-26a9-445e-bc62-6e678eef935c"
+  },
+  "cdpPort": 9533,
+  "appPid": 28728,
+  "commandSentAt": "2026-08-10T07:19:50.823Z",
+  "hookDefinitionCount": 11,
+  "headlessHookDefinitionCount": 11,
+  "hookDefinitions": [
+    {
+      "type": "command",
+      "command": "C:\\WINDOWS\\System32\\conhost.exe",
+      "args": [
+        "--headless",
+        "C:\\WINDOWS\\System32\\cmd.exe",
+        "/d",
+        "/c",
+        "C:\\Users\\neil\\AppData\\Local\\Temp\\orca-apphang-sta3608-fixed-userdata-KHj64X\\home\\.orca\\agent-hooks\\claude-hook.cmd"
+      ],
+      "timeout": 10
+    },
+    {
+      "type": "command",
+      "command": "C:\\WINDOWS\\System32\\conhost.exe",
+      "args": [
+        "--headless",
+        "C:\\WINDOWS\\System32\\cmd.exe",
+        "/d",
+        "/c",
+        "C:\\Users\\neil\\AppData\\Local\\Temp\\orca-apphang-sta3608-fixed-userdata-KHj64X\\home\\.orca\\agent-hooks\\claude-hook.cmd"
+      ],
+      "timeout": 10
+    },
+    {
+      "type": "command",
+      "command": "C:\\WINDOWS\\System32\\conhost.exe",
+      "args": [
+        "--headless",
+        "C:\\WINDOWS\\System32\\cmd.exe",
+        "/d",
+        "/c",
+        "C:\\Users\\neil\\AppData\\Local\\Temp\\orca-apphang-sta3608-fixed-userdata-KHj64X\\home\\.orca\\agent-hooks\\claude-hook.cmd"
+      ],
+      "timeout": 10
+    },
+    {
+      "type": "command",
+      "command": "C:\\WINDOWS\\System32\\conhost.exe",
+      "args": [
+        "--headless",
+        "C:\\WINDOWS\\System32\\cmd.exe",
+        "/d",
+        "/c",
+        "C:\\Users\\neil\\AppData\\Local\\Temp\\orca-apphang-sta3608-fixed-userdata-KHj64X\\home\\.orca\\agent-hooks\\claude-hook.cmd"
+      ],
+      "timeout": 10
+    },
+    {
+      "type": "command",
+      "command": "C:\\WINDOWS\\System32\\conhost.exe",
+      "args": [
+        "--headless",
+        "C:\\WINDOWS\\System32\\cmd.exe",
+        "/d",
+        "/c",
+        "C:\\Users\\neil\\AppData\\Local\\Temp\\orca-apphang-sta3608-fixed-userdata-KHj64X\\home\\.orca\\agent-hooks\\claude-hook.cmd"
+      ],
+      "timeout": 10
+    },
+    {
+      "type": "command",
+      "command": "C:\\WINDOWS\\System32\\conhost.exe",
+      "args": [
+        "--headless",
+        "C:\\WINDOWS\\System32\\cmd.exe",
+        "/d",
+        "/c",
+        "C:\\Users\\neil\\AppData\\Local\\Temp\\orca-apphang-sta3608-fixed-userdata-KHj64X\\home\\.orca\\agent-hooks\\claude-hook.cmd"
+      ],
+      "timeout": 10
+    },
+    {
+      "type": "command",
+      "command": "C:\\WINDOWS\\System32\\conhost.exe",
+      "args": [
+        "--headless",
+        "C:\\WINDOWS\\System32\\cmd.exe",
+        "/d",
+        "/c",
+        "C:\\Users\\neil\\AppData\\Local\\Temp\\orca-apphang-sta3608-fixed-userdata-KHj64X\\home\\.orca\\agent-hooks\\claude-hook.cmd"
+      ],
+      "timeout": 10
+    },
+    {
+      "type": "command",
+      "command": "C:\\WINDOWS\\System32\\conhost.exe",
+      "args": [
+        "--headless",
+        "C:\\WINDOWS\\System32\\cmd.exe",
+        "/d",
+        "/c",
+        "C:\\Users\\neil\\AppData\\Local\\Temp\\orca-apphang-sta3608-fixed-userdata-KHj64X\\home\\.orca\\agent-hooks\\claude-hook.cmd"
+      ],
+      "timeout": 10
+    },
+    {
+      "type": "command",
+      "command": "C:\\WINDOWS\\System32\\conhost.exe",
+      "args": [
+        "--headless",
+        "C:\\WINDOWS\\System32\\cmd.exe",
+        "/d",
+        "/c",
+        "C:\\Users\\neil\\AppData\\Local\\Temp\\orca-apphang-sta3608-fixed-userdata-KHj64X\\home\\.orca\\agent-hooks\\claude-hook.cmd"
+      ],
+      "timeout": 10
+    },
+    {
+      "type": "command",
+      "command": "C:\\WINDOWS\\System32\\conhost.exe",
+      "args": [
+        "--headless",
+        "C:\\WINDOWS\\System32\\cmd.exe",
+        "/d",
+        "/c",
+        "C:\\Users\\neil\\AppData\\Local\\Temp\\orca-apphang-sta3608-fixed-userdata-KHj64X\\home\\.orca\\agent-hooks\\claude-hook.cmd"
+      ],
+      "timeout": 10
+    },
+    {
+      "type": "command",
+      "command": "C:\\WINDOWS\\System32\\conhost.exe",
+      "args": [
+        "--headless",
+        "C:\\WINDOWS\\System32\\cmd.exe",
+        "/d",
+        "/c",
+        "C:\\Users\\neil\\AppData\\Local\\Temp\\orca-apphang-sta3608-fixed-userdata-KHj64X\\home\\.orca\\agent-hooks\\claude-hook.cmd"
+      ],
+      "timeout": 10
+    }
+  ],
+  "processRows": [
+    {
+      "observedAt": "2026-08-10T07:19:50.6522669+00:00",
+      "processName": "conhost.exe",
+      "processId": 51776,
+      "parentProcessId": 14632
+    },
+    {
+      "observedAt": "2026-08-10T07:19:50.6522669+00:00",
+      "processName": "conhost.exe",
+      "processId": 50652,
+      "parentProcessId": 49248
+    },
+    {
+      "observedAt": "2026-08-10T07:19:50.6543107+00:00",
+      "processName": "conhost.exe",
+      "processId": 36736,
+      "parentProcessId": 19544
+    },
+    {
+      "observedAt": "2026-08-10T07:19:50.9325822+00:00",
+      "processName": "conhost.exe",
+      "processId": 10300,
+      "parentProcessId": 32496
+    },
+    {
+      "observedAt": "2026-08-10T07:19:50.9335840+00:00",
+      "processName": "conhost.exe",
+      "processId": 44540,
+      "parentProcessId": 48084
+    },
+    {
+      "observedAt": "2026-08-10T07:19:51.1519786+00:00",
+      "processName": "conhost.exe",
+      "processId": 35328,
+      "parentProcessId": 52584
+    },
+    {
+      "observedAt": "2026-08-10T07:19:51.3429260+00:00",
+      "processName": "conhost.exe",
+      "processId": 48864,
+      "parentProcessId": 31284
+    },
+    {
+      "observedAt": "2026-08-10T07:19:51.4816690+00:00",
+      "processName": "conhost.exe",
+      "processId": 42348,
+      "parentProcessId": 43680
+    },
+    {
+      "observedAt": "2026-08-10T07:19:51.5265696+00:00",
+      "processName": "conhost.exe",
+      "processId": 43372,
+      "parentProcessId": 10172
+    },
+    {
+      "observedAt": "2026-08-10T07:19:51.5797566+00:00",
+      "processName": "conhost.exe",
+      "processId": 53152,
+      "parentProcessId": 30248
+    },
+    {
+      "observedAt": "2026-08-10T07:19:51.7263214+00:00",
+      "processName": "conhost.exe",
+      "processId": 11760,
+      "parentProcessId": 13752
+    },
+    {
+      "observedAt": "2026-08-10T07:19:51.8850206+00:00",
+      "processName": "conhost.exe",
+      "processId": 25960,
+      "parentProcessId": 5488
+    },
+    {
+      "observedAt": "2026-08-10T07:19:52.0013083+00:00",
+      "processName": "conhost.exe",
+      "processId": 41808,
+      "parentProcessId": 47500
+    },
+    {
+      "observedAt": "2026-08-10T07:19:52.0028220+00:00",
+      "processName": "cmd.exe",
+      "processId": 33236,
+      "parentProcessId": 52872
+    },
+    {
+      "observedAt": "2026-08-10T07:19:52.0824935+00:00",
+      "processName": "conhost.exe",
+      "processId": 22208,
+      "parentProcessId": 29032
+    },
+    {
+      "observedAt": "2026-08-10T07:19:52.0890878+00:00",
+      "processName": "conhost.exe",
+      "processId": 48980,
+      "parentProcessId": 39336
+    },
+    {
+      "observedAt": "2026-08-10T07:19:52.3201402+00:00",
+      "processName": "curl.exe",
+      "processId": 16336,
+      "parentProcessId": 33236
+    },
+    {
+      "observedAt": "2026-08-10T07:19:52.3833799+00:00",
+      "processName": "conhost.exe",
+      "processId": 37100,
+      "parentProcessId": 38840
+    },
+    {
+      "observedAt": "2026-08-10T07:19:52.6807131+00:00",
+      "processName": "conhost.exe",
+      "processId": 44492,
+      "parentProcessId": 22328
+    },
+    {
+      "observedAt": "2026-08-10T07:19:52.7660388+00:00",
+      "processName": "conhost.exe",
+      "processId": 32960,
+      "parentProcessId": 49888
+    },
+    {
+      "observedAt": "2026-08-10T07:19:52.9467059+00:00",
+      "processName": "conhost.exe",
+      "processId": 24804,
+      "parentProcessId": 16896
+    },
+    {
+      "observedAt": "2026-08-10T07:19:53.3514515+00:00",
+      "processName": "conhost.exe",
+      "processId": 4064,
+      "parentProcessId": 46764
+    },
+    {
+      "observedAt": "2026-08-10T07:19:53.7231257+00:00",
+      "processName": "conhost.exe",
+      "processId": 39352,
+      "parentProcessId": 46700
+    },
+    {
+      "observedAt": "2026-08-10T07:19:53.8930892+00:00",
+      "processName": "conhost.exe",
+      "processId": 51016,
+      "parentProcessId": 32624
+    },
+    {
+      "observedAt": "2026-08-10T07:19:53.8976815+00:00",
+      "processName": "conhost.exe",
+      "processId": 25184,
+      "parentProcessId": 18464
+    },
+    {
+      "observedAt": "2026-08-10T07:19:53.9603069+00:00",
+      "processName": "conhost.exe",
+      "processId": 23740,
+      "parentProcessId": 10852
+    },
+    {
+      "observedAt": "2026-08-10T07:19:54.0394971+00:00",
+      "processName": "conhost.exe",
+      "processId": 28288,
+      "parentProcessId": 12704
+    },
+    {
+      "observedAt": "2026-08-10T07:19:54.2695101+00:00",
+      "processName": "conhost.exe",
+      "processId": 9240,
+      "parentProcessId": 50588
+    },
+    {
+      "observedAt": "2026-08-10T07:19:54.4694777+00:00",
+      "processName": "conhost.exe",
+      "processId": 34036,
+      "parentProcessId": 45964
+    },
+    {
+      "observedAt": "2026-08-10T07:19:54.5875022+00:00",
+      "processName": "conhost.exe",
+      "processId": 17544,
+      "parentProcessId": 41304
+    },
+    {
+      "observedAt": "2026-08-10T07:19:54.6765040+00:00",
+      "processName": "conhost.exe",
+      "processId": 46092,
+      "parentProcessId": 45556
+    },
+    {
+      "observedAt": "2026-08-10T07:19:54.6774841+00:00",
+      "processName": "conhost.exe",
+      "processId": 10088,
+      "parentProcessId": 49204
+    },
+    {
+      "observedAt": "2026-08-10T07:19:54.8044952+00:00",
+      "processName": "conhost.exe",
+      "processId": 10120,
+      "parentProcessId": 49588
+    },
+    {
+      "observedAt": "2026-08-10T07:19:55.0365251+00:00",
+      "processName": "conhost.exe",
+      "processId": 50788,
+      "parentProcessId": 11948
+    },
+    {
+      "observedAt": "2026-08-10T07:19:55.0375350+00:00",
+      "processName": "conhost.exe",
+      "processId": 4648,
+      "parentProcessId": 16164
+    },
+    {
+      "observedAt": "2026-08-10T07:19:55.0404400+00:00",
+      "processName": "conhost.exe",
+      "processId": 15200,
+      "parentProcessId": 50496
+    },
+    {
+      "observedAt": "2026-08-10T07:19:55.0414500+00:00",
+      "processName": "conhost.exe",
+      "processId": 2356,
+      "parentProcessId": 9344
+    },
+    {
+      "observedAt": "2026-08-10T07:19:55.1154039+00:00",
+      "processName": "conhost.exe",
+      "processId": 41356,
+      "parentProcessId": 52060
+    },
+    {
+      "observedAt": "2026-08-10T07:19:55.4676060+00:00",
+      "processName": "conhost.exe",
+      "processId": 28972,
+      "parentProcessId": 19008
+    },
+    {
+      "observedAt": "2026-08-10T07:19:55.7532503+00:00",
+      "processName": "conhost.exe",
+      "processId": 31972,
+      "parentProcessId": 48736
+    },
+    {
+      "observedAt": "2026-08-10T07:19:55.7556196+00:00",
+      "processName": "conhost.exe",
+      "processId": 31464,
+      "parentProcessId": 22836
+    },
+    {
+      "observedAt": "2026-08-10T07:19:55.7571371+00:00",
+      "processName": "conhost.exe",
+      "processId": 13248,
+      "parentProcessId": 24680
+    },
+    {
+      "observedAt": "2026-08-10T07:19:55.8529510+00:00",
+      "processName": "conhost.exe",
+      "processId": 12684,
+      "parentProcessId": 28600
+    },
+    {
+      "observedAt": "2026-08-10T07:19:55.9183548+00:00",
+      "processName": "conhost.exe",
+      "processId": 18900,
+      "parentProcessId": 15260
+    },
+    {
+      "observedAt": "2026-08-10T07:19:56.1296306+00:00",
+      "processName": "conhost.exe",
+      "processId": 53120,
+      "parentProcessId": 37216
+    },
+    {
+      "observedAt": "2026-08-10T07:19:56.1312937+00:00",
+      "processName": "conhost.exe",
+      "processId": 45656,
+      "parentProcessId": 19444
+    },
+    {
+      "observedAt": "2026-08-10T07:19:56.2443951+00:00",
+      "processName": "conhost.exe",
+      "processId": 51300,
+      "parentProcessId": 43620
+    },
+    {
+      "observedAt": "2026-08-10T07:19:56.4160156+00:00",
+      "processName": "conhost.exe",
+      "processId": 22648,
+      "parentProcessId": 39984
+    },
+    {
+      "observedAt": "2026-08-10T07:19:56.6366012+00:00",
+      "processName": "conhost.exe",
+      "processId": 42512,
+      "parentProcessId": 43724
+    },
+    {
+      "observedAt": "2026-08-10T07:19:57.4628887+00:00",
+      "processName": "conhost.exe",
+      "processId": 23588,
+      "parentProcessId": 15660
+    },
+    {
+      "observedAt": "2026-08-10T07:19:57.4648983+00:00",
+      "processName": "conhost.exe",
+      "processId": 30548,
+      "parentProcessId": 23768
+    },
+    {
+      "observedAt": "2026-08-10T07:19:57.4663919+00:00",
+      "processName": "conhost.exe",
+      "processId": 33668,
+      "parentProcessId": 21184
+    },
+    {
+      "observedAt": "2026-08-10T07:19:57.5525215+00:00",
+      "processName": "conhost.exe",
+      "processId": 38668,
+      "parentProcessId": 40064
+    },
+    {
+      "observedAt": "2026-08-10T07:19:57.7165115+00:00",
+      "processName": "conhost.exe",
+      "processId": 21500,
+      "parentProcessId": 11632
+    },
+    {
+      "observedAt": "2026-08-10T07:19:58.3070115+00:00",
+      "processName": "conhost.exe",
+      "processId": 39384,
+      "parentProcessId": 17980
+    },
+    {
+      "observedAt": "2026-08-10T07:19:58.5942772+00:00",
+      "processName": "conhost.exe",
+      "processId": 11296,
+      "parentProcessId": 19144
+    },
+    {
+      "observedAt": "2026-08-10T07:19:58.6946262+00:00",
+      "processName": "cmd.exe",
+      "processId": 44756,
+      "parentProcessId": 11412
+    },
+    {
+      "observedAt": "2026-08-10T07:19:58.6966641+00:00",
+      "processName": "conhost.exe",
+      "processId": 35120,
+      "parentProcessId": 44756
+    },
+    {
+      "observedAt": "2026-08-10T07:19:58.8121436+00:00",
+      "processName": "conhost.exe",
+      "processId": 44132,
+      "parentProcessId": 23260
+    },
+    {
+      "observedAt": "2026-08-10T07:19:59.0667883+00:00",
+      "processName": "conhost.exe",
+      "processId": 31840,
+      "parentProcessId": 40212
+    },
+    {
+      "observedAt": "2026-08-10T07:19:59.2171607+00:00",
+      "processName": "conhost.exe",
+      "processId": 35824,
+      "parentProcessId": 40224
+    },
+    {
+      "observedAt": "2026-08-10T07:19:59.2179008+00:00",
+      "processName": "conhost.exe",
+      "processId": 38036,
+      "parentProcessId": 38132
+    },
+    {
+      "observedAt": "2026-08-10T07:19:59.2832603+00:00",
+      "processName": "conhost.exe",
+      "processId": 52208,
+      "parentProcessId": 33896
+    },
+    {
+      "observedAt": "2026-08-10T07:19:59.5914637+00:00",
+      "processName": "conhost.exe",
+      "processId": 46780,
+      "parentProcessId": 33736
+    },
+    {
+      "observedAt": "2026-08-10T07:19:59.7157080+00:00",
+      "processName": "conhost.exe",
+      "processId": 17156,
+      "parentProcessId": 26484
+    },
+    {
+      "observedAt": "2026-08-10T07:19:59.7174590+00:00",
+      "processName": "conhost.exe",
+      "processId": 30636,
+      "parentProcessId": 26332
+    },
+    {
+      "observedAt": "2026-08-10T07:19:59.7194680+00:00",
+      "processName": "conhost.exe",
+      "processId": 20860,
+      "parentProcessId": 16372
+    },
+    {
+      "observedAt": "2026-08-10T07:19:59.7805393+00:00",
+      "processName": "conhost.exe",
+      "processId": 27972,
+      "parentProcessId": 36012
+    },
+    {
+      "observedAt": "2026-08-10T07:20:00.1506305+00:00",
+      "processName": "cmd.exe",
+      "processId": 47260,
+      "parentProcessId": 27688
+    },
+    {
+      "observedAt": "2026-08-10T07:20:00.6648616+00:00",
+      "processName": "curl.exe",
+      "processId": 42468,
+      "parentProcessId": 47260
+    },
+    {
+      "observedAt": "2026-08-10T07:20:00.9005725+00:00",
+      "processName": "conhost.exe",
+      "processId": 20752,
+      "parentProcessId": 2872
+    },
+    {
+      "observedAt": "2026-08-10T07:20:00.9005725+00:00",
+      "processName": "conhost.exe",
+      "processId": 16388,
+      "parentProcessId": 6988
+    },
+    {
+      "observedAt": "2026-08-10T07:20:01.1646307+00:00",
+      "processName": "claude.exe",
+      "processId": 28468,
+      "parentProcessId": 33172
+    },
+    {
+      "observedAt": "2026-08-10T07:20:01.2604080+00:00",
+      "processName": "conhost.exe",
+      "processId": 47508,
+      "parentProcessId": 45340
+    },
+    {
+      "observedAt": "2026-08-10T07:20:01.3351577+00:00",
+      "processName": "conhost.exe",
+      "processId": 39788,
+      "parentProcessId": 38044
+    },
+    {
+      "observedAt": "2026-08-10T07:20:01.3358233+00:00",
+      "processName": "conhost.exe",
+      "processId": 9820,
+      "parentProcessId": 33672
+    },
+    {
+      "observedAt": "2026-08-10T07:20:01.5614199+00:00",
+      "processName": "conhost.exe",
+      "processId": 1460,
+      "parentProcessId": 19532
+    },
+    {
+      "observedAt": "2026-08-10T07:20:01.9853464+00:00",
+      "processName": "conhost.exe",
+      "processId": 840,
+      "parentProcessId": 19796
+    },
+    {
+      "observedAt": "2026-08-10T07:20:01.9853464+00:00",
+      "processName": "conhost.exe",
+      "processId": 17940,
+      "parentProcessId": 30612
+    },
+    {
+      "observedAt": "2026-08-10T07:20:02.1466067+00:00",
+      "processName": "conhost.exe",
+      "processId": 12628,
+      "parentProcessId": 46916
+    },
+    {
+      "observedAt": "2026-08-10T07:20:02.3491794+00:00",
+      "processName": "conhost.exe",
+      "processId": 44664,
+      "parentProcessId": 14012
+    },
+    {
+      "observedAt": "2026-08-10T07:20:02.7803371+00:00",
+      "processName": "conhost.exe",
+      "processId": 6444,
+      "parentProcessId": 12000
+    },
+    {
+      "observedAt": "2026-08-10T07:20:02.9976034+00:00",
+      "processName": "conhost.exe",
+      "processId": 26068,
+      "parentProcessId": 6172
+    },
+    {
+      "observedAt": "2026-08-10T07:20:03.3217415+00:00",
+      "processName": "conhost.exe",
+      "processId": 18336,
+      "parentProcessId": 43376
+    },
+    {
+      "observedAt": "2026-08-10T07:20:03.3232523+00:00",
+      "processName": "conhost.exe",
+      "processId": 45708,
+      "parentProcessId": 36576
+    },
+    {
+      "observedAt": "2026-08-10T07:20:03.3941611+00:00",
+      "processName": "conhost.exe",
+      "processId": 35816,
+      "parentProcessId": 42136
+    },
+    {
+      "observedAt": "2026-08-10T07:20:03.3961695+00:00",
+      "processName": "conhost.exe",
+      "processId": 50876,
+      "parentProcessId": 50208
+    },
+    {
+      "observedAt": "2026-08-10T07:20:03.3961695+00:00",
+      "processName": "conhost.exe",
+      "processId": 52904,
+      "parentProcessId": 30156
+    },
+    {
+      "observedAt": "2026-08-10T07:20:03.7311830+00:00",
+      "processName": "conhost.exe",
+      "processId": 48080,
+      "parentProcessId": 48076
+    },
+    {
+      "observedAt": "2026-08-10T07:20:04.0074636+00:00",
+      "processName": "conhost.exe",
+      "processId": 34276,
+      "parentProcessId": 43188
+    },
+    {
+      "observedAt": "2026-08-10T07:20:04.0074636+00:00",
+      "processName": "conhost.exe",
+      "processId": 48208,
+      "parentProcessId": 36616
+    },
+    {
+      "observedAt": "2026-08-10T07:20:04.0866214+00:00",
+      "processName": "conhost.exe",
+      "processId": 9968,
+      "parentProcessId": 16832
+    },
+    {
+      "observedAt": "2026-08-10T07:20:04.0877042+00:00",
+      "processName": "conhost.exe",
+      "processId": 38232,
+      "parentProcessId": 3852
+    },
+    {
+      "observedAt": "2026-08-10T07:20:04.0895132+00:00",
+      "processName": "claude.exe",
+      "processId": 13092,
+      "parentProcessId": 28468
+    },
+    {
+      "observedAt": "2026-08-10T07:20:04.1616214+00:00",
+      "processName": "claude.exe",
+      "processId": 17380,
+      "parentProcessId": 28468
+    },
+    {
+      "observedAt": "2026-08-10T07:20:04.1636455+00:00",
+      "processName": "conhost.exe",
+      "processId": 36744,
+      "parentProcessId": 13092
+    },
+    {
+      "observedAt": "2026-08-10T07:20:04.1648618+00:00",
+      "processName": "conhost.exe",
+      "processId": 19852,
+      "parentProcessId": 17380
+    },
+    {
+      "observedAt": "2026-08-10T07:20:04.2370595+00:00",
+      "processName": "cmd.exe",
+      "processId": 42664,
+      "parentProcessId": 28468
+    },
+    {
+      "observedAt": "2026-08-10T07:20:04.3126138+00:00",
+      "processName": "claude.exe",
+      "processId": 6736,
+      "parentProcessId": 28468
+    },
+    {
+      "observedAt": "2026-08-10T07:20:04.3137768+00:00",
+      "processName": "conhost.exe",
+      "processId": 49092,
+      "parentProcessId": 6736
+    },
+    {
+      "observedAt": "2026-08-10T07:20:04.4105122+00:00",
+      "processName": "conhost.exe",
+      "processId": 52168,
+      "parentProcessId": 28468
+    },
+    {
+      "observedAt": "2026-08-10T07:20:04.4110183+00:00",
+      "processName": "cmd.exe",
+      "processId": 17528,
+      "parentProcessId": 28468
+    },
+    {
+      "observedAt": "2026-08-10T07:20:04.4123415+00:00",
+      "processName": "cmd.exe",
+      "processId": 43032,
+      "parentProcessId": 52168
+    },
+    {
+      "observedAt": "2026-08-10T07:20:04.4132478+00:00",
+      "processName": "conhost.exe",
+      "processId": 24360,
+      "parentProcessId": 17528
+    },
+    {
+      "observedAt": "2026-08-10T07:20:04.6869160+00:00",
+      "processName": "conhost.exe",
+      "processId": 47212,
+      "parentProcessId": 28468
+    },
+    {
+      "observedAt": "2026-08-10T07:20:04.7713502+00:00",
+      "processName": "cmd.exe",
+      "processId": 7116,
+      "parentProcessId": 47212
+    },
+    {
+      "observedAt": "2026-08-10T07:20:04.7733631+00:00",
+      "processName": "conhost.exe",
+      "processId": 41000,
+      "parentProcessId": 3912
+    },
+    {
+      "observedAt": "2026-08-10T07:20:04.9435177+00:00",
+      "processName": "conhost.exe",
+      "processId": 49396,
+      "parentProcessId": 52360
+    },
+    {
+      "observedAt": "2026-08-10T07:20:04.9456121+00:00",
+      "processName": "conhost.exe",
+      "processId": 44428,
+      "parentProcessId": 6836
+    },
+    {
+      "observedAt": "2026-08-10T07:20:05.0185609+00:00",
+      "processName": "conhost.exe",
+      "processId": 6376,
+      "parentProcessId": 28468
+    },
+    {
+      "observedAt": "2026-08-10T07:20:05.0196772+00:00",
+      "processName": "cmd.exe",
+      "processId": 15976,
+      "parentProcessId": 6376
+    },
+    {
+      "observedAt": "2026-08-10T07:20:05.2083640+00:00",
+      "processName": "conhost.exe",
+      "processId": 21836,
+      "parentProcessId": 18840
+    },
+    {
+      "observedAt": "2026-08-10T07:20:05.2098687+00:00",
+      "processName": "conhost.exe",
+      "processId": 47768,
+      "parentProcessId": 28468
+    },
+    {
+      "observedAt": "2026-08-10T07:20:05.2115010+00:00",
+      "processName": "cmd.exe",
+      "processId": 12532,
+      "parentProcessId": 47768
+    },
+    {
+      "observedAt": "2026-08-10T07:20:05.4338624+00:00",
+      "processName": "conhost.exe",
+      "processId": 16648,
+      "parentProcessId": 38948
+    },
+    {
+      "observedAt": "2026-08-10T07:20:05.5161550+00:00",
+      "processName": "conhost.exe",
+      "processId": 48952,
+      "parentProcessId": 28464
+    },
+    {
+      "observedAt": "2026-08-10T07:20:05.5775130+00:00",
+      "processName": "conhost.exe",
+      "processId": 37180,
+      "parentProcessId": 28468
+    },
+    {
+      "observedAt": "2026-08-10T07:20:05.5780486+00:00",
+      "processName": "cmd.exe",
+      "processId": 35868,
+      "parentProcessId": 37180
+    },
+    {
+      "observedAt": "2026-08-10T07:20:05.9754129+00:00",
+      "processName": "conhost.exe",
+      "processId": 48312,
+      "parentProcessId": 17884
+    },
+    {
+      "observedAt": "2026-08-10T07:20:05.9807527+00:00",
+      "processName": "conhost.exe",
+      "processId": 9804,
+      "parentProcessId": 27344
+    },
+    {
+      "observedAt": "2026-08-10T07:20:06.3944083+00:00",
+      "processName": "conhost.exe",
+      "processId": 42688,
+      "parentProcessId": 49484
+    },
+    {
+      "observedAt": "2026-08-10T07:20:06.5291170+00:00",
+      "processName": "conhost.exe",
+      "processId": 43740,
+      "parentProcessId": 25092
+    },
+    {
+      "observedAt": "2026-08-10T07:20:06.6008574+00:00",
+      "processName": "conhost.exe",
+      "processId": 30040,
+      "parentProcessId": 9168
+    },
+    {
+      "observedAt": "2026-08-10T07:20:06.6028654+00:00",
+      "processName": "conhost.exe",
+      "processId": 49344,
+      "parentProcessId": 38200
+    },
+    {
+      "observedAt": "2026-08-10T07:20:06.6893486+00:00",
+      "processName": "conhost.exe",
+      "processId": 16396,
+      "parentProcessId": 6552
+    },
+    {
+      "observedAt": "2026-08-10T07:20:06.8542268+00:00",
+      "processName": "conhost.exe",
+      "processId": 45116,
+      "parentProcessId": 52712
+    },
+    {
+      "observedAt": "2026-08-10T07:20:06.9757441+00:00",
+      "processName": "conhost.exe",
+      "processId": 13696,
+      "parentProcessId": 2556
+    },
+    {
+      "observedAt": "2026-08-10T07:20:07.3310956+00:00",
+      "processName": "conhost.exe",
+      "processId": 51384,
+      "parentProcessId": 15656
+    },
+    {
+      "observedAt": "2026-08-10T07:20:07.4730596+00:00",
+      "processName": "cmd.exe",
+      "processId": 4532,
+      "parentProcessId": 28484
+    },
+    {
+      "observedAt": "2026-08-10T07:20:07.5362108+00:00",
+      "processName": "curl.exe",
+      "processId": 38012,
+      "parentProcessId": 4532
+    },
+    {
+      "observedAt": "2026-08-10T07:20:07.7109988+00:00",
+      "processName": "conhost.exe",
+      "processId": 36720,
+      "parentProcessId": 50240
+    },
+    {
+      "observedAt": "2026-08-10T07:20:07.7120518+00:00",
+      "processName": "conhost.exe",
+      "processId": 25276,
+      "parentProcessId": 48560
+    },
+    {
+      "observedAt": "2026-08-10T07:20:07.8965285+00:00",
+      "processName": "conhost.exe",
+      "processId": 35752,
+      "parentProcessId": 17828
+    },
+    {
+      "observedAt": "2026-08-10T07:20:08.0728742+00:00",
+      "processName": "conhost.exe",
+      "processId": 13544,
+      "parentProcessId": 41104
+    },
+    {
+      "observedAt": "2026-08-10T07:20:08.1505140+00:00",
+      "processName": "conhost.exe",
+      "processId": 45464,
+      "parentProcessId": 30804
+    },
+    {
+      "observedAt": "2026-08-10T07:20:08.3108799+00:00",
+      "processName": "conhost.exe",
+      "processId": 12388,
+      "parentProcessId": 43960
+    },
+    {
+      "observedAt": "2026-08-10T07:20:08.3868375+00:00",
+      "processName": "conhost.exe",
+      "processId": 35056,
+      "parentProcessId": 16964
+    },
+    {
+      "observedAt": "2026-08-10T07:20:08.4646773+00:00",
+      "processName": "conhost.exe",
+      "processId": 53108,
+      "parentProcessId": 18772
+    },
+    {
+      "observedAt": "2026-08-10T07:20:08.4657434+00:00",
+      "processName": "conhost.exe",
+      "processId": 52408,
+      "parentProcessId": 29496
+    },
+    {
+      "observedAt": "2026-08-10T07:20:08.5356250+00:00",
+      "processName": "conhost.exe",
+      "processId": 24868,
+      "parentProcessId": 6592
+    },
+    {
+      "observedAt": "2026-08-10T07:20:08.6845292+00:00",
+      "processName": "conhost.exe",
+      "processId": 12620,
+      "parentProcessId": 7260
+    },
+    {
+      "observedAt": "2026-08-10T07:20:08.8439322+00:00",
+      "processName": "conhost.exe",
+      "processId": 27724,
+      "parentProcessId": 27632
+    },
+    {
+      "observedAt": "2026-08-10T07:20:09.2058533+00:00",
+      "processName": "conhost.exe",
+      "processId": 35536,
+      "parentProcessId": 40496
+    },
+    {
+      "observedAt": "2026-08-10T07:20:09.4914090+00:00",
+      "processName": "conhost.exe",
+      "processId": 19020,
+      "parentProcessId": 35076
+    },
+    {
+      "observedAt": "2026-08-10T07:20:09.6191174+00:00",
+      "processName": "conhost.exe",
+      "processId": 17144,
+      "parentProcessId": 37560
+    },
+    {
+      "observedAt": "2026-08-10T07:20:09.8053769+00:00",
+      "processName": "conhost.exe",
+      "processId": 3412,
+      "parentProcessId": 42936
+    },
+    {
+      "observedAt": "2026-08-10T07:20:09.8064264+00:00",
+      "processName": "conhost.exe",
+      "processId": 49940,
+      "parentProcessId": 25608
+    },
+    {
+      "observedAt": "2026-08-10T07:20:10.0138418+00:00",
+      "processName": "conhost.exe",
+      "processId": 44232,
+      "parentProcessId": 44640
+    },
+    {
+      "observedAt": "2026-08-10T07:20:10.1230048+00:00",
+      "processName": "conhost.exe",
+      "processId": 27624,
+      "parentProcessId": 19968
+    },
+    {
+      "observedAt": "2026-08-10T07:20:10.1853885+00:00",
+      "processName": "conhost.exe",
+      "processId": 7120,
+      "parentProcessId": 17084
+    },
+    {
+      "observedAt": "2026-08-10T07:20:10.3115819+00:00",
+      "processName": "conhost.exe",
+      "processId": 39464,
+      "parentProcessId": 13232
+    },
+    {
+      "observedAt": "2026-08-10T07:20:10.6615870+00:00",
+      "processName": "conhost.exe",
+      "processId": 32440,
+      "parentProcessId": 49256
+    },
+    {
+      "observedAt": "2026-08-10T07:20:10.7905960+00:00",
+      "processName": "conhost.exe",
+      "processId": 17464,
+      "parentProcessId": 44764
+    },
+    {
+      "observedAt": "2026-08-10T07:20:11.0463503+00:00",
+      "processName": "conhost.exe",
+      "processId": 46012,
+      "parentProcessId": 11064
+    }
+  ],
+  "curlChains": [
+    "cmd.exe:33236 -> curl.exe:16336",
+    "cmd.exe:47260 -> curl.exe:42468",
+    "cmd.exe:4532 -> curl.exe:38012"
+  ],
+  "bashProcessCount": 0,
+  "lastStatus": null,
+  "agentStatuses": {},
+  "output": {
+    "processStarts": "C:\\Users\\neil\\orca\\workspaces\\orca\\sta-3608-windows-repro\\artifacts\\sta-3608\\fixed-2026-08-10T07-19-37-950Z-process-starts.ndjson",
+    "mockRequests": "C:\\Users\\neil\\orca\\workspaces\\orca\\sta-3608-windows-repro\\artifacts\\sta-3608\\fixed-2026-08-10T07-19-37-950Z-mock-requests.ndjson",
+    "runningScreenshot": "C:\\Users\\neil\\orca\\workspaces\\orca\\sta-3608-windows-repro\\artifacts\\sta-3608\\fixed-2026-08-10T07-19-37-950Z-running.png",
+    "completedScreenshot": "C:\\Users\\neil\\orca\\workspaces\\orca\\sta-3608-windows-repro\\artifacts\\sta-3608\\fixed-2026-08-10T07-19-37-950Z-complete.png",
+    "report": "C:\\Users\\neil\\orca\\workspaces\\orca\\sta-3608-windows-repro\\artifacts\\sta-3608\\fixed-2026-08-10T07-19-37-950Z-validation.json"
+  }
+}
