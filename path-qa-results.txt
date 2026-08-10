@@ -1,0 +1,12 @@
+=== STA-3175 PATH QA head 20edb4b ===
+PATH[0]=C:\Program Files\WindowsApps\Microsoft.PowerShell_7.6.4.0_x64__8wekyb3d8bbwe
+PATH[2]=C:\Program Files\WindowsApps\Microsoft.PowerShell_7.6.4.0_x64__8wekyb3d8bbwe
+PATH[12]=C:\Python314\Scripts\
+PATH[13]=C:\Python314\
+PATH[28]=C:\Users\neil\AppData\Local\Microsoft\WindowsApps
+Get-Command=C:\Python314\python.exe
+python --version=Python 3.14.6
+PythonIndex=13
+WindowsAppsIndex=28
+PASS=True
+PATH_LEN=33
