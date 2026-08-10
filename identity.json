@@ -1,0 +1,6 @@
+### Result
+"{\"name\":\"Orca: OrcaWin/sta-3348-windows-repro\",\"isDev\":true,\"devLabel\":\"sta-3348-windows-repro\",\"devBranch\":\"OrcaWin/sta-3348-windows-repro\",\"devWorktreeName\":\"sta-3348-windows-repro\",\"devRepoRoot\":\"C:\\\\Users\\\\neil\\\\orca\\\\workspaces\\\\orca\\\\sta-3348-windows-repro\",\"dockBadgeLabel\":null}"
+### Ran Playwright code
+```js
+await page.evaluate('() => ((async () => JSON.stringify(await window.api.app.getIdentity()))())');
+```

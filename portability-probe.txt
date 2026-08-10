@@ -1,0 +1,17 @@
+managed_command_len=1642
+uses_home=true
+uses_ostype=true
+uses_cmd=true
+uses_sh=true
+hardcoded_neil=false
+hardcoded_users=false
+bash_home=/c/Users/neil
+portable_home_guard=found:/c/Users/neil/.orca/agent-hooks/claude-hook.cmd
+installed_literal_guard=found:C:/Users/neil/.orca/agent-hooks/claude-hook.cmd
+origin_profile=absent
+copied_literal_guard=missing:C:/Users/orca-sta3348-origin-profile/.orca/agent-hooks/claude-hook.cmd
+alt_home_guard=found:/tmp/sta3348-dest.UWSu3g/.orca/agent-hooks/claude-hook.cmd
+alt_home_exec_path_ok=yes
+stale_absolute_still_points_to_origin=yes
+
+bash_exit=0

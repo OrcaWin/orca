@@ -1,0 +1,1 @@
+if [ -f 'C:/Users/neil/.orca/agent-hooks/claude-hook.cmd' ]; then 'C:/Users/neil/.orca/agent-hooks/claude-hook.cmd'; else { command -p cat 2>/dev/null || cat; } >/dev/null 2>&1 || :; fi
